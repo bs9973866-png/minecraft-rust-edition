@@ -74,11 +74,24 @@ pub struct DecodedChunkColumn {
     pub biomes: Option<Vec<u8>>,
 }
 
+/// Inventory stack received from the protocol worker.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InventoryItem {
+    pub item_id: i16,
+    pub count: i8,
+    pub damage: i16,
+    /// Raw protocol NBT bytes, including the root tag type (or [0] when absent).
+    pub nbt: Vec<u8>,
+}
+
 /// Events delivered from the protocol worker to the render/game thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerEvent {
     ChunkColumn(DecodedChunkColumn),
     BlockChanges(Vec<(BlockPos, BlockState)>),
+    InventorySlot { window_id: i8, slot: i16, item: Option<InventoryItem> },
+    WindowItems { window_id: i8, items: Vec<Option<InventoryItem>> },
+    HeldItemChange { slot: u8 },
     Teleport { position: [f32; 3], yaw: f32, pitch: f32 },
 }
 
@@ -113,6 +126,7 @@ pub enum ServerAction {
         position: BlockPos,
         face: u8,
         cursor: [u8; 3],
+        held_item: Option<InventoryItem>,
     },
     /// Select one of the nine server-side hotbar slots (0..=8).
     SelectHotbarSlot { slot: u8 },
