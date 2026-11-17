@@ -2025,6 +2025,7 @@ mod tests {
         assert_eq!(cursor.read_i16().unwrap(), 35);
         assert_eq!(cursor.read_i8().unwrap(), 64);
         assert_eq!(cursor.read_i16().unwrap(), 14);
+        assert_eq!(cursor.read_u8().unwrap(), 0); // Empty NBT marker (TAG_End).
         assert_eq!([cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap()], [8, 16, 0]);
         assert!(cursor.is_empty());
         let use_packet = encode_block_placement(BlockPos::new(-1, -1, -1), 255, None, [0.0; 3]).unwrap();
