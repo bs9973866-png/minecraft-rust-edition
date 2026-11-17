@@ -91,6 +91,24 @@ pub struct PlayerMovement {
     pub on_ground: bool,
 }
 
+/// Server-side action requested by the game/render thread.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DigStatus {
+    Start,
+    Cancel,
+    Finish,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ServerAction {
+    DigBlock {
+        position: BlockPos,
+        /// Protocol-47 face: 0 bottom, 1 top, 2 north, 3 south, 4 west, 5 east.
+        face: u8,
+        status: DigStatus,
+    },
+}
+
 /// Decode the raw S21PacketChunkData data array for protocol 47.
 ///
 /// In 1.8 the data array stores every present section's block states first,
