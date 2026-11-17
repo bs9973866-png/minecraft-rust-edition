@@ -267,7 +267,7 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
             PlayPacket::WindowItems { window_id, items }
         }
         0x09 => {
-            let slot = r.i8()?
+            let slot = r.i8()?;
             if !(0..=8).contains(&slot) { return Err("invalid held hotbar slot".into()); }
             PlayPacket::HeldItemChange { slot: slot as u8 }
         }
