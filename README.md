@@ -6,7 +6,7 @@ A clean-room Rust reimplementation project targeting compatibility with Minecraf
 
 ## Project status
 
-Early multiplayer prototype — the native client can join offline-mode protocol-47 servers, decode and render server chunk columns, apply block updates and teleports, send player movement, mine blocks, and send empty-hand right-click interactions. It is not yet a complete Minecraft 1.8.9 implementation: inventory synchronization, actual held-item block placement, online-mode authentication, entities, and many gameplay systems remain.
+Early multiplayer prototype — the native client can join offline-mode protocol-47 servers, decode and render server chunk columns, apply block and inventory updates, synchronize the selected hotbar slot, send player movement, mine blocks, and right-click using the server-reported held item. It is not yet a complete Minecraft 1.8.9 implementation: online-mode authentication, container inventory UI, entities, and many gameplay systems remain.
 
 ## Goals
 
@@ -34,7 +34,7 @@ cargo run -p rust-edition-client -- --join play.example.net:25565 --username Pla
 
 The `--join` mode performs protocol-47 login, keeps the connection alive, receives full and partial chunk columns (including bulk chunk packets), decodes legacy 1.8 block IDs/metadata, and renders the received server world in the native 3D window. Server block-change packets and server teleports are applied to the rendered world/player. WASD movement and camera rotation are sent to the server at 20 updates per second after the initial server teleport. Number keys and the mouse wheel send the selected hotbar slot to the server. Hold the left mouse button to send start/finish/cancel digging actions. Right-click sends a protocol-47 empty-hand block interaction, suitable for interacting with things such as doors, buttons, and containers when the server permits it.
 
-This is still an early multiplayer implementation. The client does not yet synchronize inventory or held items, so right-click block placement with an item is not implemented; the interaction packet intentionally reports an empty hand rather than pretending the player has an item. Microsoft/Mojang online-mode encryption and authenticated login are not implemented, so servers requiring online-mode authentication will reject this client. The client does not yet implement entity rendering, complete chat UI, all gameplay packets, vanilla movement physics, or full server compatibility.
+This is still an early multiplayer implementation. The client now reads player-window Set Slot / Window Items packets, preserves item NBT, tracks the nine hotbar stacks, follows server-held-slot changes, and echoes the selected stack in right-click placement packets. Container inventory UI, cursor-stack handling, creative inventory operations, and full item-use behavior are not implemented yet. Microsoft/Mojang online-mode encryption and authenticated login are not implemented, so servers requiring online-mode authentication will reject this client. The client does not yet implement entity rendering, complete chat UI, all gameplay packets, vanilla movement physics, or full server compatibility.
 
 The standalone local `--window` mode remains available for the procedural test world. Its controls are WASD, mouse look, Space to jump, 1–9 or mouse wheel to select a hotbar slot, left click to break, right click to place locally, and Escape to quit.
 
