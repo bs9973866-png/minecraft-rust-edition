@@ -1,8 +1,8 @@
 //! Window and GPU rendering backend for Rust Edition.
 //! Draws a generated voxel test world with a movable first-person-style camera.
 
-use std::{collections::HashSet, sync::Arc, time::Instant};
-use game::{Hotbar, PlayerPhysics, World};
+use std::{collections::{HashMap, HashSet}, sync::Arc, time::Instant};
+use game::{BlockPos, ChunkPos, Hotbar, PlayerPhysics, World, CHUNK_WIDTH};
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
@@ -181,8 +181,7 @@ struct GpuState {
     queue: wgpu::Queue,
     config: wgpu::SurfaceConfiguration,
     pipeline: wgpu::RenderPipeline,
-    vertex_buffer: wgpu::Buffer,
-    vertex_count: u32,
+    chunk_meshes: HashMap<ChunkPos, (wgpu::Buffer, u32)>,
     depth_view: wgpu::TextureView,
     camera: Camera,
     camera_buffer: wgpu::Buffer,
@@ -200,7 +199,7 @@ fn push_quad(out: &mut Vec<Vertex>, points: [[f32; 3]; 4], color: [f32; 3]) {
     }
 }
 
-fn build_world_vertices(world: &World) -> Vec<Vertex> {
+fn build_chunk_vertices(world: &World, chunk_pos: ChunkPos) -> Vec<Vertex> {
     let faces: [([i32; 3], [[f32; 3]; 4], [f32; 3]); 6] = [
         ([0, 1, 0], [[0.,1.,0.],[0.,1.,1.],[1.,1.,1.],[1.,1.,0.]], [0.30,0.72,0.25]),
         ([0,-1, 0], [[0.,0.,1.],[0.,0.,0.],[1.,0.,0.],[1.,0.,1.]], [0.35,0.25,0.16]),
@@ -209,8 +208,13 @@ fn build_world_vertices(world: &World) -> Vec<Vertex> {
         ([1, 0, 0], [[1.,0.,1.],[1.,0.,0.],[1.,1.,0.],[1.,1.,1.]], [0.38,0.26,0.16]),
         ([-1,0, 0], [[0.,0.,0.],[0.,0.,1.],[0.,1.,1.],[0.,1.,0.]], [0.29,0.20,0.13]),
     ];
+    let min_x = chunk_pos.x * CHUNK_WIDTH as i32;
+    let min_z = chunk_pos.z * CHUNK_WIDTH as i32;
     let mut vertices = Vec::new();
-    for pos in world.iter() {
+    for pos in world.iter().filter(|p| {
+        p.x >= min_x && p.x < min_x + CHUNK_WIDTH as i32
+            && p.z >= min_z && p.z < min_z + CHUNK_WIDTH as i32
+    }) {
         for (normal, corners, color) in &faces {
             if world.contains(pos.offset(*normal)) { continue; }
             let translated = corners.map(|p| [p[0] + pos.x as f32, p[1] + pos.y as f32, p[2] + pos.z as f32]);
@@ -219,6 +223,7 @@ fn build_world_vertices(world: &World) -> Vec<Vertex> {
     }
     vertices
 }
+
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Rust Edition depth buffer"),
@@ -336,14 +341,19 @@ impl GpuState {
             usage: wgpu::BufferUsages::VERTEX,
         });
         let world = World::demo();
-        let vertices = build_world_vertices(&world);
-        let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("terrain vertex buffer"), contents: bytemuck::cast_slice(&vertices),
-            usage: wgpu::BufferUsages::VERTEX,
-        });
+        let mut chunk_meshes = HashMap::new();
+        for chunk_pos in world.chunk_positions() {
+            let vertices = build_chunk_vertices(&world, chunk_pos);
+            if vertices.is_empty() { continue; }
+            let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+                label: Some("chunk vertex buffer"), contents: bytemuck::cast_slice(&vertices),
+                usage: wgpu::BufferUsages::VERTEX,
+            });
+            chunk_meshes.insert(chunk_pos, (buffer, vertices.len() as u32));
+        }
         let depth_view = create_depth_view(&device, config.width, config.height);
-        Ok(Self { surface, device, queue, config, pipeline, vertex_buffer,
-            vertex_count: vertices.len() as u32, depth_view, camera, camera_buffer, camera_bind_group,
+        Ok(Self { surface, device, queue, config, pipeline, chunk_meshes,
+            depth_view, camera, camera_buffer, camera_bind_group,
             overlay_pipeline, overlay_buffer, overlay_vertex_count: overlay_vertices.len() as u32,
             hotbar, world })
     }
@@ -358,27 +368,49 @@ impl GpuState {
         self.overlay_vertex_count = vertices.len() as u32;
     }
 
-    fn rebuild_world_mesh(&mut self) {
-        let vertices = build_world_vertices(&self.world);
-        self.vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("updated voxel world vertices"),
+    fn rebuild_chunk_mesh(&mut self, chunk_pos: ChunkPos) {
+        let vertices = build_chunk_vertices(&self.world, chunk_pos);
+        if vertices.is_empty() {
+            self.chunk_meshes.remove(&chunk_pos);
+            return;
+        }
+        let buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("rebuilt chunk vertex buffer"),
             contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
-        self.vertex_count = vertices.len() as u32;
+        self.chunk_meshes.insert(chunk_pos, (buffer, vertices.len() as u32));
+    }
+
+    fn rebuild_chunk_and_neighbors(&mut self, pos: BlockPos) {
+        let chunk = ChunkPos::from_block(pos.x, pos.z);
+        self.rebuild_chunk_mesh(chunk);
+        if pos.x.rem_euclid(CHUNK_WIDTH as i32) == 0 {
+            self.rebuild_chunk_mesh(ChunkPos { x: chunk.x - 1, z: chunk.z });
+        } else if pos.x.rem_euclid(CHUNK_WIDTH as i32) == CHUNK_WIDTH as i32 - 1 {
+            self.rebuild_chunk_mesh(ChunkPos { x: chunk.x + 1, z: chunk.z });
+        }
+        if pos.z.rem_euclid(CHUNK_WIDTH as i32) == 0 {
+            self.rebuild_chunk_mesh(ChunkPos { x: chunk.x, z: chunk.z - 1 });
+        } else if pos.z.rem_euclid(CHUNK_WIDTH as i32) == CHUNK_WIDTH as i32 - 1 {
+            self.rebuild_chunk_mesh(ChunkPos { x: chunk.x, z: chunk.z + 1 });
+        }
     }
 
     fn interact(&mut self, place: bool) {
         let origin = self.camera.position.to_array();
         let direction = self.camera.forward().to_array();
         if let Some(hit) = self.world.raycast(origin, direction, 6.0) {
-            if place {
+            let changed = if place {
                 let target = hit.block.offset(hit.face);
-                if !self.world.contains(target) { self.world.set_solid(target); }
-            } else {
-                self.world.remove(hit.block);
-            }
-            self.rebuild_world_mesh();
+                if !self.world.contains(target) {
+                    self.world.set_solid(target);
+                    Some(target)
+                } else { None }
+            } else if self.world.remove(hit.block) {
+                Some(hit.block)
+            } else { None };
+            if let Some(pos) = changed { self.rebuild_chunk_and_neighbors(pos); }
         }
     }
 
@@ -415,8 +447,10 @@ impl GpuState {
             });
             pass.set_pipeline(&self.pipeline);
             pass.set_bind_group(0, &self.camera_bind_group, &[]);
-            pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
-            pass.draw(0..self.vertex_count, 0..1);
+            for (buffer, vertex_count) in self.chunk_meshes.values() {
+                pass.set_vertex_buffer(0, buffer.slice(..));
+                pass.draw(0..*vertex_count, 0..1);
+            }
         }
         {
             let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
