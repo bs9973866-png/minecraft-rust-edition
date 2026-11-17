@@ -112,7 +112,7 @@ pub enum DigStatus {
     Finish,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ServerAction {
     DigBlock {
         position: BlockPos,
