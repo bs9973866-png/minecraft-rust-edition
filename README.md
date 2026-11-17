@@ -25,7 +25,7 @@ Early development — repository scaffold and architecture are being established
 
 ## Current milestone: editable voxel test world
 
-The client now uses a separate sparse world model in the game crate. It supports block coordinates, adding/removing solid blocks, and voxel DDA raycasting. The renderer builds visible cube faces from that world and updates its GPU vertex buffer after edits.
+The client now uses a separate sparse world model in the game crate. It supports block coordinates, adding/removing solid blocks, and voxel DDA raycasting. The renderer builds visible cube faces from that world and updates its GPU vertex buffer after edits. First-person controls now use continuous time-based movement while keys are held, and relative mouse motion rotates the camera with a captured cursor.
 
 Controls in `--window` mode:
 
