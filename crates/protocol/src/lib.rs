@@ -70,3 +70,7 @@ mod tests {
         assert_eq!(decode_varint(&[0x80; 5]), Err(CodecError::VarIntTooLong));
     }
 }
+
+
+pub mod play;
+pub use play::{decode_play_packet, JoinGame, PlayPacket};
