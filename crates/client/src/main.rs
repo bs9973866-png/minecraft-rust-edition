@@ -3,8 +3,70 @@ mod login;
 
 use game::{decode_chunk_column, BlockPos, BlockState, ChunkPos, InventoryItem, PlayerMovement, ServerAction, ServerEvent};
 use protocol::{encode_varint, PlayPacket};
-use std::{sync::mpsc, thread};
+use std::{io::{self, BufRead, Write}, sync::mpsc, thread};
 use renderer::RenderConfig;
+
+fn append_chat_component(value: &serde_json::Value, output: &mut String) {
+    match value {
+        serde_json::Value::String(text) => output.push_str(text),
+        serde_json::Value::Array(parts) => {
+            for part in parts { append_chat_component(part, output); }
+        }
+        serde_json::Value::Object(object) => {
+            if let Some(text) = object.get("text").and_then(serde_json::Value::as_str) {
+                output.push_str(text);
+            } else if let Some(translation_key) = object.get("translate").and_then(serde_json::Value::as_str) {
+                // The client has no language table yet; keep translation components readable.
+                output.push_str(translation_key);
+                if let Some(arguments) = object.get("with") {
+                    output.push_str(" (");
+                    append_chat_component(arguments, output);
+                    output.push(')');
+                }
+            }
+            if let Some(extra) = object.get("extra") {
+                append_chat_component(extra, output);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn plain_chat_text(json: &str) -> String {
+    match serde_json::from_str::<serde_json::Value>(json) {
+        Ok(component) => {
+            let mut output = String::new();
+            append_chat_component(&component, &mut output);
+            if output.is_empty() { json.to_owned() } else { output }
+        }
+        Err(_) => json.to_owned(),
+    }
+}
+
+fn start_console_chat(sender: login::PlayPacketSender) -> Result<(), Box<dyn std::error::Error>> {
+    thread::Builder::new()
+        .name("rust-edition-console-chat".into())
+        .spawn(move || {
+            let stdin = io::stdin();
+            let mut input = stdin.lock();
+            let mut stdout = io::stdout();
+            loop {
+                if write!(stdout, "\\n> ").and_then(|_| stdout.flush()).is_err() { break; }
+                let mut line = String::new();
+                match input.read_line(&mut line) {
+                    Ok(0) | Err(_) => break,
+                    Ok(_) => {}
+                }
+                while line.ends_with(['\\n', '\\r']) { line.pop(); }
+                if line.is_empty() { continue; }
+                match sender.send_chat_message(&line) {
+                    Ok(()) => println!("[YOU] {line}"),
+                    Err(error) => eprintln!("[CHAT] could not send message: {error}"),
+                }
+            }
+        })?;
+    Ok(())
+}
 
 fn print_usage() {
     println!("Usage:");
@@ -275,8 +337,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (host, port) = parse_target(target)?;
         let mut session = login::connect_offline(host, port, username)?;
         println!("Connected to {host}:{port} as {} (UUID {})", session.player.username, session.player.uuid);
-        println!("Protocol 47 Play state active. Press Ctrl+C to disconnect.");
+        println!("Protocol 47 Play state active. Type a message and press Enter; commands beginning with / are sent too. Press Ctrl+C to disconnect.");
         session.send_client_settings()?;
+        start_console_chat(session.packet_sender())?;
 
         loop {
             let packet = session.read_play_packet()?;
@@ -287,7 +350,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     info.entity_id, info.game_mode, info.dimension, info.difficulty, info.level_type
                 ),
                 PlayPacket::ChatMessage { json, position } =>
-                    println!("[CHAT:{position}] {json}"),
+                    println!("[CHAT:{position}] {}", plain_chat_text(&json)),
                 PlayPacket::TimeUpdate { world_age, time_of_day } =>
                     println!("[TIME] age={world_age}, time={time_of_day}"),
                 PlayPacket::SpawnPosition { x, y, z } =>
