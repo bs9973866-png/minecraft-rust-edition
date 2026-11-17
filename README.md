@@ -23,11 +23,18 @@ Early development — repository scaffold and architecture are being established
 - `crates/renderer` — GPU rendering and resource management.
 - `crates/client` — desktop application and orchestration.
 
-## Current milestone: first voxel terrain render
+## Current milestone: movable 3D camera
 
-The native `wgpu` renderer now builds and draws a small 9×9 demo terrain from cube faces. It removes hidden faces between adjacent blocks, uploads the resulting vertex buffer to the GPU, and uses a depth buffer. The scene uses a simple isometric projection so the first block geometry is visible without a camera controller.
+The voxel demo now uses a perspective view-projection matrix and a GPU uniform buffer. The camera can move around the test terrain and rotate, rather than being locked to the original isometric view.
 
-This is a renderer test scene, not yet Minecraft's terrain generator, textures, chunk format, or multiplayer world.
+Controls in `--window` mode:
+
+- `W`, `A`, `S`, `D`: move horizontally
+- Arrow keys: look around
+- `Space` / `Shift`: move up / down
+- `Escape`: close the window
+
+The scene is still generated test terrain, not Minecraft's real terrain generator, texture atlas, chunk data, player physics, or multiplayer world.
 
 Run it with:
 
