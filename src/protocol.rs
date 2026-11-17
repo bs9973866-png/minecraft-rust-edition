@@ -349,7 +349,6 @@ pub fn decode_window_items(payload: &[u8]) -> Result<WindowItemsData, ProtocolEr
     Ok(WindowItemsData { window_id, items })
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 /// Decode S2D Open Window (0x2D).
 pub fn decode_open_window(payload: &[u8]) -> Result<OpenWindowData, ProtocolError> {
     let mut cursor = PacketCursor::new(payload);
@@ -395,6 +394,7 @@ pub fn encode_confirm_transaction_reply(window_id: u8, action_number: i16, accep
     encode_packet(0x0F, &payload)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoginSuccess {
     pub uuid: String,
     pub username: String,
