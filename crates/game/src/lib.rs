@@ -358,6 +358,21 @@ mod tests {
     }
 
     #[test]
+    fn chunk_block_listing_contains_only_that_chunk() {
+        let mut world = World::new();
+        let a = BlockPos::new(0, 10, 0);
+        let b = BlockPos::new(15, 20, 15);
+        let c = BlockPos::new(16, 30, 0);
+        world.set_solid(a);
+        world.set_solid(b);
+        world.set_solid(c);
+        let mut blocks = world.chunk_blocks(ChunkPos { x: 0, z: 0 });
+        blocks.sort_by_key(|p| (p.x, p.y, p.z));
+        assert_eq!(blocks, vec![a, b]);
+        assert_eq!(world.chunk_blocks(ChunkPos { x: 1, z: 0 }), vec![c]);
+    }
+
+    #[test]
     fn chunk_storage_rejects_out_of_height_blocks() {
         let mut world = World::new();
         assert!(!world.set_block(BlockPos::new(0, -1, 0), BlockState(1)));
