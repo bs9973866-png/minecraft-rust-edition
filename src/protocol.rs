@@ -338,8 +338,11 @@ pub fn decode_spawn_player(payload: &[u8]) -> Result<EntityState, ProtocolError>
     let metadata = read_entity_metadata(&mut cursor)?;
     finish_entity_packet(&cursor)?;
     Ok(EntityState {
-        entity_id, kind: EntityKind::Player { uuid, held_item }, position,
-        yaw, pitch, head_yaw: yaw, velocity: [0.0; 3], on_ground: false, metadata,
+        entity_id, kind: EntityKind::Player { uuid, held_item }, position, target_position: position,
+        position_interpolation_ticks: 0,
+        yaw, pitch, head_yaw: yaw, target_yaw: yaw, target_pitch: pitch, target_head_yaw: yaw,
+        rotation_interpolation_ticks: 0, head_interpolation_ticks: 0,
+        velocity: [0.0; 3], on_ground: false, equipment: std::collections::BTreeMap::new(), metadata,
     })
 }
 
@@ -356,7 +359,11 @@ pub fn decode_spawn_mob(payload: &[u8]) -> Result<EntityState, ProtocolError> {
     let metadata = read_entity_metadata(&mut cursor)?;
     finish_entity_packet(&cursor)?;
     Ok(EntityState {
-        entity_id, kind: EntityKind::Mob { mob_type }, position, yaw, pitch, head_yaw, velocity, on_ground: false, metadata,
+        entity_id, kind: EntityKind::Mob { mob_type }, position, target_position: position,
+        position_interpolation_ticks: 0,
+        yaw, pitch, head_yaw, target_yaw: yaw, target_pitch: pitch, target_head_yaw: head_yaw,
+        rotation_interpolation_ticks: 0, head_interpolation_ticks: 0,
+        velocity, on_ground: false, equipment: std::collections::BTreeMap::new(), metadata,
     })
 }
 
@@ -374,7 +381,11 @@ pub fn decode_spawn_object(payload: &[u8]) -> Result<EntityState, ProtocolError>
     } else { [0.0; 3] };
     finish_entity_packet(&cursor)?;
     Ok(EntityState {
-        entity_id, kind: EntityKind::Object { object_type, data }, position, yaw, pitch, head_yaw: yaw, velocity, on_ground: false,
+        entity_id, kind: EntityKind::Object { object_type, data }, position, target_position: position,
+        position_interpolation_ticks: 0,
+        yaw, pitch, head_yaw: yaw, target_yaw: yaw, target_pitch: pitch, target_head_yaw: yaw,
+        rotation_interpolation_ticks: 0, head_interpolation_ticks: 0,
+        velocity, on_ground: false, equipment: std::collections::BTreeMap::new(),
         metadata: std::collections::BTreeMap::new(),
     })
 }
@@ -437,6 +448,29 @@ pub fn decode_entity_metadata(payload: &[u8]) -> Result<EntityEvent, ProtocolErr
     let entries = read_entity_metadata(&mut cursor)?;
     finish_entity_packet(&cursor)?;
     Ok(EntityEvent::Metadata { entity_id, entries })
+}
+
+/// Decode S04 Entity Equipment (0x04).
+pub fn decode_entity_equipment(payload: &[u8]) -> Result<EntityEvent, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let entity_id = cursor.read_varint()?;
+    let slot = cursor.read_i16()?;
+    let item = cursor.read_item_stack()?;
+    finish_entity_packet(&cursor)?;
+    Ok(EntityEvent::Equipment { entity_id, slot, item })
+}
+
+/// Decode S12 Entity Velocity (0x12), with signed shorts scaled by 8000.
+pub fn decode_entity_velocity(payload: &[u8]) -> Result<EntityEvent, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let entity_id = cursor.read_varint()?;
+    let velocity = [
+        decode_velocity(cursor.read_i16()?),
+        decode_velocity(cursor.read_i16()?),
+        decode_velocity(cursor.read_i16()?),
+    ];
+    finish_entity_packet(&cursor)?;
+    Ok(EntityEvent::Velocity { entity_id, velocity })
 }
 
 /// Encode a packet body, including the packet ID but excluding the outer frame length.
@@ -1175,10 +1209,12 @@ impl PlaySession {
                 }
                 Ok(PlayEvent::ConfirmTransaction(data))
             }
+            0x04 => Ok(PlayEvent::Entity(decode_entity_equipment(payload)?)),
             0x0C => Ok(PlayEvent::Entity(EntityEvent::Spawn(decode_spawn_player(payload)?))),
             0x0E => Ok(PlayEvent::Entity(EntityEvent::Spawn(decode_spawn_object(payload)?))),
             0x0F => Ok(PlayEvent::Entity(EntityEvent::Spawn(decode_spawn_mob(payload)?))),
             0x13 => Ok(PlayEvent::Entity(EntityEvent::Destroy(decode_destroy_entities(payload)?))),
+            0x12 => Ok(PlayEvent::Entity(decode_entity_velocity(payload)?)),
             0x15 => Ok(PlayEvent::Entity(decode_entity_relative_move(payload)?)),
             0x16 => Ok(PlayEvent::Entity(decode_entity_look(payload)?)),
             0x17 => Ok(PlayEvent::Entity(decode_entity_look_move(payload)?)),
@@ -2365,6 +2401,28 @@ mod tests {
         assert_eq!(decode_destroy_entities(&destroy).unwrap(), vec![9, 10, 11]);
     }
 
+    #[test]
+    fn decodes_entity_velocity_and_equipment_packets() {
+        let mut velocity = Vec::new();
+        write_varint(77, &mut velocity);
+        velocity.extend_from_slice(&8000_i16.to_be_bytes());
+        velocity.extend_from_slice(&(-4000_i16).to_be_bytes());
+        velocity.extend_from_slice(&16000_i16.to_be_bytes());
+        assert_eq!(decode_entity_velocity(&velocity).unwrap(), EntityEvent::Velocity { entity_id: 77, velocity: [1.0, -0.5, 2.0] });
+
+        let mut equipment = Vec::new();
+        write_varint(77, &mut equipment);
+        equipment.extend_from_slice(&4_i16.to_be_bytes());
+        put_network_item_stack(310, 1, 0, None, &mut equipment);
+        let event = decode_entity_equipment(&equipment).unwrap();
+        assert!(matches!(event, EntityEvent::Equipment { entity_id: 77, slot: 4, item: Some(ref stack) } if stack.item_id == 310 && stack.count == 1));
+
+        let mut empty_equipment = Vec::new();
+        write_varint(77, &mut empty_equipment);
+        empty_equipment.extend_from_slice(&1_i16.to_be_bytes());
+        put_network_item_stack(-1, 0, 0, None, &mut empty_equipment);
+        assert_eq!(decode_entity_equipment(&empty_equipment).unwrap(), EntityEvent::Equipment { entity_id: 77, slot: 1, item: None });
+    }
     #[test]
     fn rejects_invalid_entity_metadata_and_bad_entity_packet_flags() {
         let mut metadata = Vec::new();

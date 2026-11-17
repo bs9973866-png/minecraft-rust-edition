@@ -144,27 +144,53 @@ impl World {
 
     pub fn clear_entities(&mut self) { self.entities.clear(); }
 
+    /// Advance one simulation/render tick for all tracked entity interpolations.
+    pub fn tick_entity_interpolation(&mut self) {
+        for entity in self.entities.values_mut() {
+            entity.tick_interpolation();
+        }
+    }
+
     /// Apply one authoritative entity event from the protocol-47 server stream.
     pub fn apply_entity_event(&mut self, event: EntityEvent) {
         match event {
             EntityEvent::Spawn(entity) => { self.entities.insert(entity.entity_id, entity); }
             EntityEvent::RelativeMove { entity_id, delta, rotation, on_ground } => {
                 if let Some(entity) = self.entities.get_mut(&entity_id) {
-                    for axis in 0..3 { entity.position[axis] += delta[axis]; }
-                    if let Some((yaw, pitch)) = rotation { entity.yaw = yaw; entity.pitch = pitch; }
+                    for axis in 0..3 { entity.target_position[axis] += delta[axis]; }
+                    entity.position_interpolation_ticks = 3;
+                    if let Some((yaw, pitch)) = rotation {
+                        entity.target_yaw = yaw;
+                        entity.target_pitch = pitch;
+                        entity.rotation_interpolation_ticks = 3;
+                    }
                     entity.on_ground = on_ground;
                 }
             }
             EntityEvent::Teleport { entity_id, position, yaw, pitch, on_ground } => {
                 if let Some(entity) = self.entities.get_mut(&entity_id) {
                     entity.position = position;
+                    entity.target_position = position;
+                    entity.position_interpolation_ticks = 0;
                     entity.yaw = yaw;
                     entity.pitch = pitch;
+                    entity.target_yaw = yaw;
+                    entity.target_pitch = pitch;
+                    entity.rotation_interpolation_ticks = 0;
                     entity.on_ground = on_ground;
                 }
             }
             EntityEvent::HeadLook { entity_id, yaw } => {
-                if let Some(entity) = self.entities.get_mut(&entity_id) { entity.head_yaw = yaw; }
+                if let Some(entity) = self.entities.get_mut(&entity_id) {
+                    entity.target_head_yaw = yaw;
+                    entity.head_interpolation_ticks = 3;
+                }
+            }
+            EntityEvent::Velocity { entity_id, velocity } => {
+                if let Some(entity) = self.entities.get_mut(&entity_id) { entity.velocity = velocity; }
+            }
+            EntityEvent::Equipment { entity_id, slot, item } => {
+                if let Some(entity) = self.entities.get_mut(&entity_id) { entity.equipment.insert(slot, item); }
             }
             EntityEvent::Metadata { entity_id, entries } => {
                 if let Some(entity) = self.entities.get_mut(&entity_id) {
@@ -295,9 +321,13 @@ mod tests {
         let entity = EntityState {
             entity_id: 77,
             kind: EntityKind::Mob { mob_type: 54 },
-            position: [1.0, 2.0, 3.0],
-            yaw: 0.0, pitch: 0.0, head_yaw: 0.0,
+            position: [1.0, 2.0, 3.0], target_position: [1.0, 2.0, 3.0],
+            position_interpolation_ticks: 0,
+            yaw: 350.0, pitch: 0.0, head_yaw: 0.0,
+            target_yaw: 350.0, target_pitch: 0.0, target_head_yaw: 0.0,
+            rotation_interpolation_ticks: 0, head_interpolation_ticks: 0,
             velocity: [0.0; 3], on_ground: false,
+            equipment: std::collections::BTreeMap::new(),
             metadata: std::collections::BTreeMap::new(),
         };
         world.apply_entity_event(EntityEvent::Spawn(entity));
@@ -308,11 +338,31 @@ mod tests {
             entity_id: 77, delta: [0.5, -1.0, 2.0], rotation: Some((90.0, 45.0)), on_ground: true
         });
         let entity = world.get_entity(77).unwrap();
-        assert_eq!(entity.position, [1.5, 1.0, 5.0]);
-        assert_eq!((entity.yaw, entity.pitch, entity.on_ground), (90.0, 45.0, true));
+        assert_eq!(entity.position, [1.0, 2.0, 3.0]);
+        assert_eq!(entity.target_position, [1.5, 1.0, 5.0]);
+        assert_eq!((entity.yaw, entity.target_yaw, entity.on_ground), (350.0, 90.0, true));
+        world.tick_entity_interpolation();
+        let current = world.get_entity(77).unwrap();
+        assert!((current.position[0] - (1.0 + 0.5 / 3.0)).abs() < 1.0e-9);
+        assert!((current.position[1] - (2.0 - 1.0 / 3.0)).abs() < 1.0e-9);
+        assert!((current.position[2] - (3.0 + 2.0 / 3.0)).abs() < 1.0e-9);
+        assert!((current.yaw - 383.33333).abs() < 0.001);
+        world.tick_entity_interpolation();
+        world.tick_entity_interpolation();
+        assert_eq!(world.get_entity(77).unwrap().position, [1.5, 1.0, 5.0]);
+        assert_eq!((world.get_entity(77).unwrap().yaw, world.get_entity(77).unwrap().pitch), (90.0, 45.0));
 
         world.apply_entity_event(EntityEvent::HeadLook { entity_id: 77, yaw: 180.0 });
-        assert_eq!(world.get_entity(77).unwrap().head_yaw, 180.0);
+        assert_eq!(world.get_entity(77).unwrap().head_yaw, 0.0);
+        world.tick_entity_interpolation();
+        world.tick_entity_interpolation();
+        world.tick_entity_interpolation();
+        assert!((world.get_entity(77).unwrap().head_yaw - 180.0).abs() < 0.001);
+
+        world.apply_entity_event(EntityEvent::Velocity { entity_id: 77, velocity: [1.0, 2.0, -1.0] });
+        assert_eq!(world.get_entity(77).unwrap().velocity, [1.0, 2.0, -1.0]);
+        world.apply_entity_event(EntityEvent::Equipment { entity_id: 77, slot: 4, item: None });
+        assert_eq!(world.get_entity(77).unwrap().equipment.get(&4), Some(&None));
         let mut metadata = std::collections::BTreeMap::new();
         metadata.insert(2, EntityMetadataValue::String("name tag".into()));
         world.apply_entity_event(EntityEvent::Metadata { entity_id: 77, entries: metadata });
@@ -322,6 +372,8 @@ mod tests {
             entity_id: 77, position: [10.0, 20.0, 30.0], yaw: 270.0, pitch: 0.0, on_ground: false
         });
         assert_eq!(world.get_entity(77).unwrap().position, [10.0, 20.0, 30.0]);
+        assert_eq!(world.get_entity(77).unwrap().target_position, [10.0, 20.0, 30.0]);
+        assert_eq!(world.get_entity(77).unwrap().position_interpolation_ticks, 0);
         world.apply_entity_event(EntityEvent::Destroy(vec![77, 999]));
         assert_eq!(world.entity_count(), 0);
         assert!(world.get_entity(77).is_none());
