@@ -14,6 +14,9 @@ pub enum PlayPacket {
     ChunkDataBulk { sky_light: bool, chunks: Vec<BulkChunkColumn> },
     BlockChange { x: i32, y: i32, z: i32, state: u16 },
     MultiBlockChange { chunk_x: i32, chunk_z: i32, changes: Vec<BlockChange> },
+    SetSlot { window_id: i8, slot: i16, item: Option<ItemStack> },
+    WindowItems { window_id: i8, items: Vec<Option<ItemStack>> },
+    HeldItemChange { slot: u8 },
     KeepAlive { id: i32 },
     Unknown { id: i32, payload: Vec<u8> },
 }
@@ -33,6 +36,16 @@ pub struct BlockChange {
     pub z: i32,
     /// Legacy global block state: (block ID << 4) | metadata.
     pub state: u16,
+}
+
+/// Legacy 1.8 item stack including the exact uncompressed NBT bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ItemStack {
+    pub item_id: i16,
+    pub count: i8,
+    pub damage: i16,
+    /// Root NBT tag bytes, or a single zero byte when no NBT is present.
+    pub nbt: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -62,7 +75,72 @@ impl<'a> Reader<'a> {
     fn bool(&mut self) -> Result<bool, String> {
         match self.u8()? { 0 => Ok(false), 1 => Ok(true), _ => Err("invalid boolean in play packet".into()) }
     }
+    fn i16(&mut self) -> Result<i16, String> { Ok(i16::from_be_bytes(self.take(2)?.try_into().unwrap())) }
+    fn u16(&mut self) -> Result<u16, String> { Ok(u16::from_be_bytes(self.take(2)?.try_into().unwrap())) }
     fn i32(&mut self) -> Result<i32, String> { Ok(i32::from_be_bytes(self.take(4)?.try_into().unwrap())) }
+    fn skip_nbt_payload(&mut self, tag: u8, depth: usize) -> Result<(), String> {
+        if depth > 32 { return Err("NBT nesting exceeds safety limit".into()); }
+        match tag {
+            1 => { self.take(1)?; }
+            2 => { self.take(2)?; }
+            3 | 5 => { self.take(4)?; }
+            4 | 6 => { self.take(8)?; }
+            7 => {
+                let len = self.i32()?;
+                if !(0..=1_048_576).contains(&len) { return Err("invalid NBT byte-array length".into()); }
+                self.take(len as usize)?;
+            }
+            8 => {
+                let len = usize::from(self.u16()?);
+                self.take(len)?;
+            }
+            9 => {
+                let element = self.u8()?;
+                let len = self.i32()?;
+                if !(0..=65_536).contains(&len) { return Err("invalid NBT list length".into()); }
+                if element == 0 && len != 0 { return Err("non-empty NBT list has end-tag elements".into()); }
+                for _ in 0..len { self.skip_nbt_payload(element, depth + 1)?; }
+            }
+            10 => self.skip_nbt_compound(depth + 1)?,
+            11 | 12 => {
+                let len = self.i32()?;
+                if !(0..=262_144).contains(&len) { return Err("invalid NBT numeric-array length".into()); }
+                let width = if tag == 11 { 4_usize } else { 8_usize };
+                let bytes = (len as usize).checked_mul(width).ok_or("NBT array size overflow")?;
+                self.take(bytes)?;
+            }
+            _ => return Err(format!("invalid NBT tag type {tag}")),
+        }
+        Ok(())
+    }
+    fn skip_nbt_compound(&mut self, depth: usize) -> Result<(), String> {
+        if depth > 32 { return Err("NBT nesting exceeds safety limit".into()); }
+        loop {
+            let tag = self.u8()?;
+            if tag == 0 { break; }
+            let name_len = usize::from(self.u16()?);
+            self.take(name_len)?;
+            self.skip_nbt_payload(tag, depth + 1)?;
+        }
+        Ok(())
+    }
+    fn item_stack(&mut self) -> Result<Option<ItemStack>, String> {
+        let item_id = self.i16()?;
+        if item_id == -1 { return Ok(None); }
+        if item_id < 0 { return Err("invalid negative item ID".into()); }
+        let count = self.i8()?;
+        let damage = self.i16()?;
+        let nbt_start = self.offset;
+        let root_tag = self.u8()?;
+        if root_tag != 0 {
+            if root_tag != 10 { return Err("item NBT root must be a compound tag".into()); }
+            let root_name_len = usize::from(self.u16()?);
+            self.take(root_name_len)?;
+            self.skip_nbt_compound(0)?;
+        }
+        let nbt = self.bytes[nbt_start..self.offset].to_vec();
+        Ok(Some(ItemStack { item_id, count, damage, nbt }))
+    }
     fn varint(&mut self) -> Result<i32, String> {
         let (value, used) = decode_varint(self.bytes.get(self.offset..).ok_or("missing VarInt")?)
             .map_err(|e| e.to_string())?;
@@ -174,6 +252,24 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
                 });
             }
             PlayPacket::MultiBlockChange { chunk_x, chunk_z, changes }
+        }
+        0x2f => PlayPacket::SetSlot {
+            window_id: r.i8()?,
+            slot: r.i16()?,
+            item: r.item_stack()?,
+        },
+        0x30 => {
+            let window_id = r.i8()?;
+            let count = r.i16()?;
+            if !(0..=4096).contains(&count) { return Err("invalid window item count".into()); }
+            let mut items = Vec::with_capacity(count as usize);
+            for _ in 0..count { items.push(r.item_stack()?); }
+            PlayPacket::WindowItems { window_id, items }
+        }
+        0x3f => {
+            let slot = r.i8()?;
+            if !(0..=8).contains(&slot) { return Err("invalid held hotbar slot".into()); }
+            PlayPacket::HeldItemChange { slot: slot as u8 }
         }
         0x23 => {
             let packed = r.i64()?;
@@ -317,6 +413,60 @@ mod tests {
             chunk_x: -2,
             chunk_z: 3,
             changes: vec![BlockChange { x: -22, y: 64, z: 53, state: 18 }],
+        });
+    }
+
+    #[test]
+    fn decodes_empty_and_named_item_stacks_in_set_slot() {
+        let mut empty = vec![0x2f, 0, 0, 36];
+        empty.extend_from_slice(&(-1_i16).to_be_bytes());
+        assert_eq!(decode_play_packet(&empty).unwrap(), PlayPacket::SetSlot {
+            window_id: 0, slot: 36, item: None,
+        });
+
+        let mut item = vec![0x2f, 0, 0, 37];
+        item.extend_from_slice(&276_i16.to_be_bytes());
+        item.push(1);
+        item.extend_from_slice(&0_i16.to_be_bytes());
+        item.push(0); // no NBT
+        assert_eq!(decode_play_packet(&item).unwrap(), PlayPacket::SetSlot {
+            window_id: 0, slot: 37,
+            item: Some(ItemStack { item_id: 276, count: 1, damage: 0, nbt: vec![0] }),
+        });
+    }
+
+    #[test]
+    fn decodes_window_items_and_held_slot() {
+        let mut window = vec![0x30, 0];
+        window.extend_from_slice(&2_i16.to_be_bytes());
+        window.extend_from_slice(&(-1_i16).to_be_bytes());
+        window.extend_from_slice(&5_i16.to_be_bytes());
+        window.push(3);
+        window.extend_from_slice(&2_i16.to_be_bytes());
+        window.push(0);
+        assert_eq!(decode_play_packet(&window).unwrap(), PlayPacket::WindowItems {
+            window_id: 0,
+            items: vec![None, Some(ItemStack { item_id: 5, count: 3, damage: 2, nbt: vec![0] })],
+        });
+        assert_eq!(decode_play_packet(&[0x3f, 8]).unwrap(), PlayPacket::HeldItemChange { slot: 8 });
+        assert!(decode_play_packet(&[0x3f, 9]).is_err());
+    }
+
+    #[test]
+    fn skips_and_preserves_nested_item_nbt() {
+        let mut p = vec![0x2f, 0, 0, 36];
+        p.extend_from_slice(&276_i16.to_be_bytes());
+        p.push(1);
+        p.extend_from_slice(&0_i16.to_be_bytes());
+        // Root compound named "x", with one byte tag named "a", then end.
+        p.extend_from_slice(&[10, 0, 1, b'x', 1, 0, 1, b'a', 42, 0]);
+        let decoded = decode_play_packet(&p).unwrap();
+        assert_eq!(decoded, PlayPacket::SetSlot {
+            window_id: 0, slot: 36,
+            item: Some(ItemStack {
+                item_id: 276, count: 1, damage: 0,
+                nbt: vec![10, 0, 1, b'x', 1, 0, 1, b'a', 42, 0],
+            }),
         });
     }
 
