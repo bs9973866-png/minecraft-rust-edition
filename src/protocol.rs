@@ -22,6 +22,7 @@ pub enum ProtocolError {
     StringTooLong { length: usize, maximum: usize },
     InvalidChunkData(&'static str), InvalidBlockUpdate(&'static str),
     UnexpectedPacket { expected: i32, actual: i32 }, InvalidAddress(String),
+    OnlineModeRequired, LoginRejected(String), InvalidLoginPacket(i32),
 }
 
 impl fmt::Display for ProtocolError {
@@ -39,6 +40,9 @@ impl fmt::Display for ProtocolError {
             Self::StringTooLong { length, maximum } => write!(f, "packet string is too long ({length} bytes; maximum {maximum})"),
             Self::UnexpectedPacket { expected, actual } => write!(f, "unexpected packet id {actual}; expected {expected}"),
             Self::InvalidAddress(address) => write!(f, "invalid server address: {address}"),
+            Self::OnlineModeRequired => write!(f, "server requires online-mode encryption/authentication; this client only supports offline login"),
+            Self::LoginRejected(reason) => write!(f, "server rejected login: {reason}"),
+            Self::InvalidLoginPacket(id) => write!(f, "unexpected login-state packet id: {id}"),
         }
     }
 }
@@ -515,6 +519,53 @@ pub fn decode_chunk_data_packet(payload: &[u8], has_sky_light: bool) -> Result<C
     Ok(ChunkColumnData { position: ChunkPos::new(x, z), ground_up, unload: false, sections, biomes })
 }
 
+/// Result of a successful offline-mode login. This is a connection in the Play state
+/// only after the server has sent Login Success; the game loop is built on top of it.
+pub struct LoginSession {
+    pub identity: LoginSuccess,
+    pub stream: PacketStream<TcpStream>,
+}
+
+/// Connect to a Minecraft Java server and perform offline-mode login.
+/// Online-mode encryption is deliberately rejected rather than bypassed.
+pub fn login_offline(host: &str, port: u16, username: &str, timeout: Duration) -> Result<LoginSession, ProtocolError> {
+    let login_start = encode_login_start(username)?;
+    let mut addresses = (host, port).to_socket_addrs()?;
+    let address = addresses.next().ok_or_else(|| ProtocolError::InvalidAddress(format!("{host}:{port}")))?;
+    let mut socket = TcpStream::connect_timeout(&address, timeout)?;
+    socket.set_nodelay(true)?;
+    socket.set_read_timeout(Some(timeout))?;
+    socket.set_write_timeout(Some(timeout))?;
+    socket.write_all(&handshake_packet(host, port, 2))?;
+    socket.write_all(&login_start)?;
+    socket.flush()?;
+
+    let mut stream = PacketStream::new(socket);
+    for _ in 0..64 {
+        let packet = stream.read_packet()?;
+        let mut cursor = PacketCursor::new(&packet);
+        let packet_id = cursor.read_varint()?;
+        let payload = cursor.read_bytes(cursor.remaining())?;
+        match packet_id {
+            0x00 => {
+                let disconnect = decode_login_disconnect(payload)?;
+                return Err(ProtocolError::LoginRejected(disconnect.reason_json));
+            }
+            0x01 => return Err(ProtocolError::OnlineModeRequired),
+            0x02 => {
+                let identity = decode_login_success(payload)?;
+                return Ok(LoginSession { identity, stream });
+            }
+            0x03 => {
+                let threshold = decode_set_compression(payload)?;
+                stream.set_compression_threshold(Some(threshold));
+            }
+            other => return Err(ProtocolError::InvalidLoginPacket(other)),
+        }
+    }
+    Err(ProtocolError::InvalidLoginPacket(-1))
+}
+
 /// Stateful packet framing for a single Minecraft TCP connection.
 pub struct PacketStream<S> {
     inner: S,
@@ -956,6 +1007,86 @@ mod tests {
         assert!(encode_login_start("").is_err());
         assert!(encode_login_start("name that is too long").is_err());
         assert!(encode_login_start("Náme").is_err());
+    }
+    #[test]
+    fn offline_login_completes_compressed_protocol_47_handshake() {
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let handshake = read_frame(&mut socket, 256).unwrap();
+            let mut cursor = PacketCursor::new(&handshake);
+            assert_eq!(cursor.read_varint().unwrap(), 0);
+            assert_eq!(cursor.read_varint().unwrap(), 47);
+            assert_eq!(cursor.read_string(255).unwrap(), "127.0.0.1");
+            assert_eq!(cursor.read_u16().unwrap(), port);
+            assert_eq!(cursor.read_varint().unwrap(), 2);
+            let login = read_frame(&mut socket, 128).unwrap();
+            let mut cursor = PacketCursor::new(&login);
+            assert_eq!(cursor.read_varint().unwrap(), 0);
+            assert_eq!(cursor.read_string(16).unwrap(), "RustPlayer");
+
+            let mut threshold = Vec::new();
+            write_varint(32, &mut threshold);
+            socket.write_all(&encode_packet(0x03, &threshold)).unwrap();
+            let mut server_stream = PacketStream::new(socket);
+            server_stream.set_compression_threshold(Some(32));
+            let mut success = Vec::new();
+            write_string("12345678123456781234567812345678", &mut success);
+            write_string("RustPlayer", &mut success);
+            server_stream.write_packet(0x02, &success).unwrap();
+        });
+
+        let session = login_offline("127.0.0.1", port, "RustPlayer", Duration::from_secs(3)).unwrap();
+        assert_eq!(session.identity.username, "RustPlayer");
+        assert_eq!(session.identity.uuid, "12345678123456781234567812345678");
+        assert_eq!(session.stream.compression_threshold(), Some(32));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn offline_login_refuses_online_mode_encryption_instead_of_bypassing_it() {
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let _handshake = read_frame(&mut socket, 256).unwrap();
+            let _login = read_frame(&mut socket, 128).unwrap();
+            socket.write_all(&encode_packet(0x01, &[0, 1, 2])).unwrap();
+        });
+        let result = login_offline("127.0.0.1", port, "RustPlayer", Duration::from_secs(3));
+        assert!(matches!(result, Err(ProtocolError::OnlineModeRequired)));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn offline_login_returns_server_disconnect_reason() {
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let _handshake = read_frame(&mut socket, 256).unwrap();
+            let _login = read_frame(&mut socket, 128).unwrap();
+            let mut payload = Vec::new();
+            write_string(r#"{"text":"Invalid username"}"#, &mut payload);
+            socket.write_all(&encode_packet(0x00, &payload)).unwrap();
+        });
+        let result = login_offline("127.0.0.1", port, "RustPlayer", Duration::from_secs(3));
+        assert!(matches!(result, Err(ProtocolError::LoginRejected(reason)) if reason.contains("Invalid username")));
+        server.join().unwrap();
     }
     #[test]
     fn parses_host_ports() {

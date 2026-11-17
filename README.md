@@ -15,6 +15,7 @@ An independent, clean-room Rust implementation project targeting the **Minecraft
 - Join Game, Keep Alive, Time Update, Spawn Position, and Player Position & Look codecs with dimension-aware skylight selection.
 - Stateful TCP packet framing that switches between normal and negotiated zlib compression.
 - Offline login-start, Login Success, Login Disconnect, and Set Compression codecs.
+- TCP offline-mode login flow using handshake + login start, negotiated compression, and a persistent Play-state packet stream; online-mode encryption is explicitly refused.
 - World application for full and partial chunk updates, with packed light-nibble access.
 - Bounded packet cursor with primitive and UTF-8 string readers.
 - Sparse 16×256×16 chunk/world storage with correct negative-coordinate chunk math.
@@ -39,7 +40,7 @@ cargo run -- --version
 cargo run -- --status play.example.net:25565
 ```
 
-The status command performs the Minecraft Java status handshake and prints the raw JSON response. It does not yet log into a server or render the game.
+The status command performs the Minecraft Java status handshake and prints the raw JSON response. The library also exposes an offline-mode login function; online-mode authentication and the rendered game loop are not implemented yet.
 
 ## Planned engine milestones
 
