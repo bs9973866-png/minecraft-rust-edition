@@ -9,6 +9,8 @@ An independent, clean-room Rust implementation project targeting the **Minecraft
 - Protocol 47 VarInt encoding/decoding and bounded packet framing.
 - Handshake and status-request packet construction.
 - TCP server status query (`--status HOST:PORT`).
+- Protocol-47 chunk-column decoder for legacy block states, section masks, block light, optional skylight, and biome arrays.
+- World application for full and partial chunk updates, with packed light-nibble access.
 - Bounded packet cursor with primitive and UTF-8 string readers.
 - Sparse 16×256×16 chunk/world storage with correct negative-coordinate chunk math.
 - Vector/AABB primitives and 3D voxel DDA raycasting.
