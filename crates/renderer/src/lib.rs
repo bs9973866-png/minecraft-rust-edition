@@ -601,6 +601,11 @@ fn run_window_internal(
                 if amount != 0 {
                     gpu.hotbar.cycle(-amount);
                     gpu.refresh_overlay();
+                    if let Some(sender) = action_tx.as_ref() {
+                        let _ = sender.send(ServerAction::SelectHotbarSlot {
+                            slot: gpu.hotbar.selected_index() as u8,
+                        });
+                    }
                 }
             }
             WindowEvent::MouseInput { state, button, .. } => {
@@ -670,6 +675,11 @@ fn run_window_internal(
                             } {
                                 gpu.hotbar.select(index);
                                 gpu.refresh_overlay();
+                                if let Some(sender) = action_tx.as_ref() {
+                                    let _ = sender.send(ServerAction::SelectHotbarSlot {
+                                        slot: index as u8,
+                                    });
+                                }
                             }
                             if key == KeyCode::Space { jump_requested = true; }
                         }
