@@ -54,12 +54,14 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let (host, port) = parse_target(target)?;
         let host = host.to_owned();
         let username = username.to_owned();
+        let thread_host = host.clone();
+        let thread_username = username.clone();
         let (event_tx, event_rx) = mpsc::channel::<ServerEvent>();
 
         thread::Builder::new()
             .name("rust-edition-network".into())
             .spawn(move || {
-                let mut session = match login::connect_offline(&host, port, &username) {
+                let mut session = match login::connect_offline(&thread_host, port, &thread_username) {
                     Ok(session) => session,
                     Err(error) => {
                         eprintln!("[NETWORK] connection failed: {error}");
@@ -67,7 +69,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
                 eprintln!(
-                    "[NETWORK] connected to {host}:{port} as {}",
+                    "[NETWORK] connected to {thread_host}:{port} as {}",
                     session.player.username
                 );
                 if let Err(error) = session.send_client_settings() {
