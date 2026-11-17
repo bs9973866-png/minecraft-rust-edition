@@ -208,13 +208,8 @@ fn build_chunk_vertices(world: &World, chunk_pos: ChunkPos) -> Vec<Vertex> {
         ([1, 0, 0], [[1.,0.,1.],[1.,0.,0.],[1.,1.,0.],[1.,1.,1.]], [0.38,0.26,0.16]),
         ([-1,0, 0], [[0.,0.,0.],[0.,0.,1.],[0.,1.,1.],[0.,1.,0.]], [0.29,0.20,0.13]),
     ];
-    let min_x = chunk_pos.x * CHUNK_WIDTH as i32;
-    let min_z = chunk_pos.z * CHUNK_WIDTH as i32;
     let mut vertices = Vec::new();
-    for pos in world.iter().filter(|p| {
-        p.x >= min_x && p.x < min_x + CHUNK_WIDTH as i32
-            && p.z >= min_z && p.z < min_z + CHUNK_WIDTH as i32
-    }) {
+    for pos in world.chunk_blocks(chunk_pos) {
         for (normal, corners, color) in &faces {
             if world.contains(pos.offset(*normal)) { continue; }
             let translated = corners.map(|p| [p[0] + pos.x as f32, p[1] + pos.y as f32, p[2] + pos.z as f32]);
