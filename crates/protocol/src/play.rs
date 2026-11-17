@@ -18,6 +18,8 @@ pub enum PlayPacket {
     SetSlot { window_id: i8, slot: i16, item: Option<ItemStack> },
     WindowItems { window_id: i8, items: Vec<Option<ItemStack>> },
     HeldItemChange { slot: u8 },
+    SpawnPlayer { entity_id: i32, uuid: String, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, held_item: i16 },
+    SpawnMob { entity_id: i32, uuid: String, mob_type: u8, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, head_yaw: u8, velocity: [i16; 3] },
     SpawnObject { entity_id: i32, object_type: u8, x: i32, y: i32, z: i32, pitch: u8, yaw: u8, data: i32, velocity: Option<[i16; 3]> },
     DestroyEntities { entity_ids: Vec<i32> },
     EntityRelativeMove { entity_id: i32, delta: [i8; 3], on_ground: bool },
@@ -282,6 +284,21 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
             if !(0..=8).contains(&slot) { return Err("invalid held hotbar slot".into()); }
             PlayPacket::HeldItemChange { slot: slot as u8 }
         }
+        0x0c => PlayPacket::SpawnPlayer {
+            entity_id: r.varint()?,
+            uuid: r.string()?,
+            x: r.i32()?, y: r.i32()?, z: r.i32()?,
+            yaw: r.u8()?, pitch: r.u8()?,
+            held_item: r.i16()?,
+        },
+        0x0f => PlayPacket::SpawnMob {
+            entity_id: r.varint()?,
+            uuid: r.string()?,
+            mob_type: r.u8()?,
+            x: r.i32()?, y: r.i32()?, z: r.i32()?,
+            yaw: r.u8()?, pitch: r.u8()?, head_yaw: r.u8()?,
+            velocity: [r.i16()?, r.i16()?, r.i16()?],
+        },
         0x0e => {
             let entity_id = r.varint()?;
             let object_type = r.u8()?;
@@ -360,6 +377,21 @@ fn sign_extend(value: i32, bits: u32) -> i32 {
 mod tests {
     use super::*;
     use crate::encode_varint;
+
+    #[test]
+    fn decodes_named_player_spawn() {
+        let mut p = vec![0x0c];
+        encode_varint(12, &mut p);
+        encode_varint(32, &mut p);
+        p.extend_from_slice(b"0123456789abcdef0123456789abcdef");
+        p.extend_from_slice(&[32_i32.to_be_bytes(), 2048_i32.to_be_bytes(), (-96_i32).to_be_bytes()].concat());
+        p.extend_from_slice(&[64, 128]);
+        p.extend_from_slice(&276_i16.to_be_bytes());
+        assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::SpawnPlayer {
+            entity_id: 12, uuid: "0123456789abcdef0123456789abcdef".into(),
+            x: 32, y: 2048, z: -96, yaw: 64, pitch: 128, held_item: 276,
+        });
+    }
 
     #[test]
     fn decodes_spawn_object_with_optional_velocity() {
