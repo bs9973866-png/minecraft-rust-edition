@@ -174,6 +174,91 @@ pub fn parse_prefix_with_limits(data: &[u8], limits: Limits) -> Result<(NamedTag
     Ok((NamedTag { name, value }, consumed))
 }
 
+fn tag_type(tag: &Tag) -> u8 {
+    match tag {
+        Tag::Byte(_) => 1, Tag::Short(_) => 2, Tag::Int(_) => 3, Tag::Long(_) => 4,
+        Tag::Float(_) => 5, Tag::Double(_) => 6, Tag::ByteArray(_) => 7, Tag::String(_) => 8,
+        Tag::List { .. } => 9, Tag::Compound(_) => 10, Tag::IntArray(_) => 11, Tag::LongArray(_) => 12,
+    }
+}
+
+fn write_nbt_string(value: &str, out: &mut Vec<u8>, limits: Limits) -> Result<(), Error> {
+    let bytes = value.as_bytes();
+    if bytes.len() > limits.max_string_bytes || bytes.len() > u16::MAX as usize { return Err(Error::Limit("string bytes")); }
+    out.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+    out.extend_from_slice(bytes);
+    Ok(())
+}
+
+fn write_length(length: usize, out: &mut Vec<u8>, limits: Limits) -> Result<(), Error> {
+    if length > limits.max_array_len || length > i32::MAX as usize { return Err(Error::Limit("array/list length")); }
+    out.extend_from_slice(&(length as i32).to_be_bytes());
+    Ok(())
+}
+
+fn write_payload(tag: &Tag, out: &mut Vec<u8>, limits: Limits, depth: usize, count: &mut usize) -> Result<(), Error> {
+    if depth > limits.max_depth { return Err(Error::Limit("nesting depth")); }
+    *count = count.checked_add(1).ok_or(Error::Limit("element count"))?;
+    if *count > limits.max_elements { return Err(Error::Limit("element count")); }
+    match tag {
+        Tag::Byte(v) => out.push(*v as u8),
+        Tag::Short(v) => out.extend_from_slice(&v.to_be_bytes()),
+        Tag::Int(v) => out.extend_from_slice(&v.to_be_bytes()),
+        Tag::Long(v) => out.extend_from_slice(&v.to_be_bytes()),
+        Tag::Float(v) => out.extend_from_slice(&v.to_bits().to_be_bytes()),
+        Tag::Double(v) => out.extend_from_slice(&v.to_bits().to_be_bytes()),
+        Tag::ByteArray(values) => {
+            write_length(values.len(), out, limits)?;
+            *count = count.checked_add(values.len()).ok_or(Error::Limit("element count"))?;
+            if *count > limits.max_elements { return Err(Error::Limit("element count")); }
+            out.extend(values.iter().map(|value| *value as u8));
+        }
+        Tag::String(value) => write_nbt_string(value, out, limits)?,
+        Tag::List { element_type, items } => {
+            if *element_type > 12 || (*element_type == 0 && !items.is_empty()) { return Err(Error::InvalidTag(*element_type)); }
+            if items.iter().any(|item| tag_type(item) != *element_type) { return Err(Error::InvalidTag(*element_type)); }
+            out.push(*element_type);
+            write_length(items.len(), out, limits)?;
+            for item in items { write_payload(item, out, limits, depth + 1, count)?; }
+        }
+        Tag::Compound(children) => {
+            for (name, child) in children {
+                out.push(tag_type(child));
+                write_nbt_string(name, out, limits)?;
+                write_payload(child, out, limits, depth + 1, count)?;
+            }
+            out.push(0);
+        }
+        Tag::IntArray(values) => {
+            write_length(values.len(), out, limits)?;
+            *count = count.checked_add(values.len()).ok_or(Error::Limit("element count"))?;
+            if *count > limits.max_elements { return Err(Error::Limit("element count")); }
+            for value in values { out.extend_from_slice(&value.to_be_bytes()); }
+        }
+        Tag::LongArray(values) => {
+            write_length(values.len(), out, limits)?;
+            *count = count.checked_add(values.len()).ok_or(Error::Limit("element count"))?;
+            if *count > limits.max_elements { return Err(Error::Limit("element count")); }
+            for value in values { out.extend_from_slice(&value.to_be_bytes()); }
+        }
+    }
+    Ok(())
+}
+
+/// Serialize one named root NBT tag using the uncompressed big-endian format.
+pub fn encode(root: &NamedTag) -> Result<Vec<u8>, Error> { encode_with_limits(root, Limits::default()) }
+
+pub fn encode_with_limits(root: &NamedTag, limits: Limits) -> Result<Vec<u8>, Error> {
+    let id = tag_type(&root.value);
+    if !(1..=12).contains(&id) { return Err(Error::InvalidRoot(id)); }
+    let mut out = Vec::new();
+    out.push(id);
+    write_nbt_string(&root.name, &mut out, limits)?;
+    let mut count = 0;
+    write_payload(&root.value, &mut out, limits, 0, &mut count)?;
+    Ok(out)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -183,6 +268,25 @@ mod tests {
         out.extend_from_slice(s.as_bytes());
     }
 
+
+    #[test]
+    fn encodes_and_round_trips_nested_tags() {
+        let mut children = BTreeMap::new();
+        children.insert("health".into(), Tag::Short(20));
+        children.insert("label".into(), Tag::String("Rust client".into()));
+        children.insert("values".into(), Tag::List { element_type: 3, items: vec![Tag::Int(1), Tag::Int(-2)] });
+        let root = NamedTag { name: "root".into(), value: Tag::Compound(children) };
+        let bytes = encode(&root).unwrap();
+        assert_eq!(parse(&bytes).unwrap(), root);
+    }
+
+    #[test]
+    fn rejects_mixed_type_lists_and_oversized_strings() {
+        let mixed = NamedTag { name: String::new(), value: Tag::List { element_type: 3, items: vec![Tag::Int(1), Tag::Short(2)] } };
+        assert_eq!(encode(&mixed), Err(Error::InvalidTag(3)));
+        let long_name = NamedTag { name: "x".repeat(65_536), value: Tag::Int(1) };
+        assert!(matches!(encode(&long_name), Err(Error::Limit("string bytes"))));
+    }
 
     #[test]
     fn parses_one_root_tag_from_a_concatenated_stream() {
