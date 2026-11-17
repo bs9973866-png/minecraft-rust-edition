@@ -13,7 +13,12 @@ fn print_usage() {
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
-    if args.get(1).map(String::as_str) == Some("--window") {
+    if args.iter().any(|arg| arg == "--window") {
+        let username = args.iter().position(|arg| arg == "--username")
+            .and_then(|index| args.get(index + 1))
+            .map(String::as_str)
+            .unwrap_or("Player");
+        println!("Offline profile: {username}");
         renderer::run_window().map_err(|error| format!("renderer: {error}"))?;
         return Ok(());
     }
