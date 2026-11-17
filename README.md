@@ -103,4 +103,4 @@ The client also has a protocol-47 login handshake test:
 cargo run -p rust-edition-client -- --login localhost:25565 --username Player
 ```
 
-This only works with servers configured for offline-mode. It verifies the Login Start / Login Success exchange; it does **not** yet enter the world or implement play-state packets. Online-mode encryption, compression, and authenticated Microsoft login are not implemented.
+This only works with servers configured for offline-mode. It verifies the Login Start / Login Success exchange; it does **not** yet enter the world or implement play-state packets. Online-mode encryption and authenticated Microsoft login are not implemented. Login packet compression (Set Compression + zlib framing) is supported.
