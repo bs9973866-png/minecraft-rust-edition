@@ -18,6 +18,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .and_then(|index| args.get(index + 1))
             .map(String::as_str)
             .unwrap_or("Player");
+        if !valid_offline_username(username) {
+            return Err("invalid offline nickname: use 3–16 Latin letters, digits, or underscores".into());
+        }
         println!("Offline profile: {username}");
         renderer::run_window_with_username(username).map_err(|error| format!("renderer: {error}"))?;
         return Ok(());
@@ -72,4 +75,29 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("Renderer config: {render:?}");
     println!("Use --status HOST[:PORT] to test a Minecraft server.");
     Ok(())
+}
+
+
+fn valid_offline_username(name: &str) -> bool {
+    (3..=16).contains(&name.len())
+        && name.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
+}
+
+#[cfg(test)]
+mod tests {
+    use super::valid_offline_username;
+
+    #[test]
+    fn accepts_valid_offline_names() {
+        assert!(valid_offline_username("Player_123"));
+        assert!(valid_offline_username("abc"));
+    }
+
+    #[test]
+    fn rejects_invalid_offline_names() {
+        assert!(!valid_offline_username("ab"));
+        assert!(!valid_offline_username("has space"));
+        assert!(!valid_offline_username("имя"));
+        assert!(!valid_offline_username("name_that_is_too_long"));
+    }
 }
