@@ -1,11 +1,12 @@
 //! Window and GPU rendering backend for Rust Edition.
 //! Draws a generated voxel test world with a movable first-person-style camera.
 
-use std::{collections::HashSet, sync::Arc};
+use std::sync::Arc;
+use game::{BlockPos, World};
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
-    event::{ElementState, Event, WindowEvent},
+    event::{ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::WindowBuilder,
@@ -129,6 +130,7 @@ struct GpuState {
     camera: Camera,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    world: World,
 }
 
 fn push_quad(out: &mut Vec<Vertex>, points: [[f32; 3]; 4], color: [f32; 3]) {
@@ -137,33 +139,25 @@ fn push_quad(out: &mut Vec<Vertex>, points: [[f32; 3]; 4], color: [f32; 3]) {
     }
 }
 
-fn build_demo_terrain() -> Vec<Vertex> {
-    let mut occupied = HashSet::new();
-    for x in -4_i32..=4 {
-        for z in -4_i32..=4 {
-            let height = if (x * 3 + z * 5).rem_euclid(7) == 0 { 2 } else { 1 };
-            for y in 0..height { occupied.insert((x, y, z)); }
-        }
-    }
-    let faces: [((i32, i32, i32), [[f32; 3]; 4], [f32; 3]); 6] = [
-        ((0, 1, 0), [[0.,1.,0.],[0.,1.,1.],[1.,1.,1.],[1.,1.,0.]], [0.30,0.72,0.25]),
-        ((0,-1, 0), [[0.,0.,1.],[0.,0.,0.],[1.,0.,0.],[1.,0.,1.]], [0.35,0.25,0.16]),
-        ((0, 0, 1), [[0.,0.,1.],[1.,0.,1.],[1.,1.,1.],[0.,1.,1.]], [0.42,0.29,0.18]),
-        ((0, 0,-1), [[1.,0.,0.],[0.,0.,0.],[0.,1.,0.],[1.,1.,0.]], [0.34,0.23,0.14]),
-        ((1, 0, 0), [[1.,0.,1.],[1.,0.,0.],[1.,1.,0.],[1.,1.,1.]], [0.38,0.26,0.16]),
-        ((-1,0, 0), [[0.,0.,0.],[0.,0.,1.],[0.,1.,1.],[0.,1.,0.]], [0.29,0.20,0.13]),
+fn build_world_vertices(world: &World) -> Vec<Vertex> {
+    let faces: [([i32; 3], [[f32; 3]; 4], [f32; 3]); 6] = [
+        ([0, 1, 0], [[0.,1.,0.],[0.,1.,1.],[1.,1.,1.],[1.,1.,0.]], [0.30,0.72,0.25]),
+        ([0,-1, 0], [[0.,0.,1.],[0.,0.,0.],[1.,0.,0.],[1.,0.,1.]], [0.35,0.25,0.16]),
+        ([0, 0, 1], [[0.,0.,1.],[1.,0.,1.],[1.,1.,1.],[0.,1.,1.]], [0.42,0.29,0.18]),
+        ([0, 0,-1], [[1.,0.,0.],[0.,0.,0.],[0.,1.,0.],[1.,1.,0.]], [0.34,0.23,0.14]),
+        ([1, 0, 0], [[1.,0.,1.],[1.,0.,0.],[1.,1.,0.],[1.,1.,1.]], [0.38,0.26,0.16]),
+        ([-1,0, 0], [[0.,0.,0.],[0.,0.,1.],[0.,1.,1.],[0.,1.,0.]], [0.29,0.20,0.13]),
     ];
     let mut vertices = Vec::new();
-    for &(x, y, z) in &occupied {
+    for pos in world.iter() {
         for (normal, corners, color) in &faces {
-            if occupied.contains(&(x + normal.0, y + normal.1, z + normal.2)) { continue; }
-            let translated = corners.map(|p| [p[0] + x as f32, p[1] + y as f32, p[2] + z as f32]);
+            if world.contains(pos.offset(*normal)) { continue; }
+            let translated = corners.map(|p| [p[0] + pos.x as f32, p[1] + pos.y as f32, p[2] + pos.z as f32]);
             push_quad(&mut vertices, translated, *color);
         }
     }
     vertices
 }
-
 fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::TextureView {
     device.create_texture(&wgpu::TextureDescriptor {
         label: Some("Rust Edition depth buffer"),
@@ -254,14 +248,39 @@ impl GpuState {
             multisample: wgpu::MultisampleState::default(), multiview: None,
         });
 
-        let vertices = build_demo_terrain();
+        let world = World::demo();
+        let vertices = build_world_vertices(&world);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("terrain vertex buffer"), contents: bytemuck::cast_slice(&vertices),
             usage: wgpu::BufferUsages::VERTEX,
         });
         let depth_view = create_depth_view(&device, config.width, config.height);
         Ok(Self { surface, device, queue, config, pipeline, vertex_buffer,
-            vertex_count: vertices.len() as u32, depth_view, camera, camera_buffer, camera_bind_group })
+            vertex_count: vertices.len() as u32, depth_view, camera, camera_buffer, camera_bind_group, world })
+    }
+
+    fn rebuild_world_mesh(&mut self) {
+        let vertices = build_world_vertices(&self.world);
+        self.vertex_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("updated voxel world vertices"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        self.vertex_count = vertices.len() as u32;
+    }
+
+    fn interact(&mut self, place: bool) {
+        let origin = self.camera.position.to_array();
+        let direction = self.camera.forward().to_array();
+        if let Some(hit) = self.world.raycast(origin, direction, 6.0) {
+            if place {
+                let target = hit.block.offset(hit.face);
+                if !self.world.contains(target) { self.world.set_solid(target); }
+            } else {
+                self.world.remove(hit.block);
+            }
+            self.rebuild_world_mesh();
+        }
     }
 
     fn update_camera(&mut self) {
@@ -308,7 +327,7 @@ impl GpuState {
 
 use wgpu::util::DeviceExt;
 
-/// Opens the client window. WASD moves the camera; arrows rotate it; Space/Shift move vertically.
+/// Opens the client window. WASD moves the camera; arrows rotate it; Space/Shift move vertically; mouse buttons edit blocks.
 pub fn run_window() -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("creating event loop: {e}"))?;
     let window = Arc::new(WindowBuilder::new()
@@ -316,7 +335,7 @@ pub fn run_window() -> Result<(), String> {
         .with_inner_size(PhysicalSize::new(1280, 720))
         .build(&event_loop).map_err(|e| format!("creating window: {e}"))?);
     let mut gpu = pollster::block_on(GpuState::new(window.clone()))?;
-    eprintln!("Rust Edition voxel renderer initialized. WASD: move, arrows: look, Space/Shift: up/down.");
+    eprintln!("Rust Edition voxel renderer initialized. WASD: move, arrows: look, Space/Shift: up/down, left click: break, right click: place.");
 
     event_loop.set_control_flow(ControlFlow::Wait);
     window.request_redraw();
@@ -325,6 +344,14 @@ pub fn run_window() -> Result<(), String> {
             WindowEvent::CloseRequested => target.exit(),
             WindowEvent::Resized(size) => { gpu.resize(size); window.request_redraw(); }
             WindowEvent::ScaleFactorChanged { .. } => { gpu.resize(window.inner_size()); window.request_redraw(); }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
+                match button {
+                    MouseButton::Left => gpu.interact(false),
+                    MouseButton::Right => gpu.interact(true),
+                    _ => {}
+                }
+                window.request_redraw();
+            }
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => {
                 if let PhysicalKey::Code(key) = event.physical_key {
                     if key == KeyCode::Escape { target.exit(); }
