@@ -2238,6 +2238,150 @@ mod tests {
         assert!(encode_block_placement(BlockPos::new(0, 64, 0), 7, None, [0.0; 3]).is_err());
     }
     #[test]
+    fn decodes_spawn_player_uuid_position_rotation_held_item_and_metadata() {
+        let mut payload = Vec::new();
+        write_varint(45, &mut payload);
+        payload.extend(0_u8..16);
+        payload.extend_from_slice(&32_i32.to_be_bytes());
+        payload.extend_from_slice(&64_i32.to_be_bytes());
+        payload.extend_from_slice(&(-96_i32).to_be_bytes());
+        payload.push(64);
+        payload.push((-32_i8) as u8);
+        payload.extend_from_slice(&276_i16.to_be_bytes());
+        payload.extend_from_slice(&[0x00, 7, 0x7f]);
+        let entity = decode_spawn_player(&payload).unwrap();
+        assert_eq!(entity.entity_id, 45);
+        assert_eq!(entity.kind, EntityKind::Player { uuid: "00010203-0405-0607-0809-0a0b0c0d0e0f".into(), held_item: 276 });
+        assert_eq!(entity.position, [1.0, 2.0, -3.0]);
+        assert!((entity.yaw - 90.0).abs() < 0.001);
+        assert!((entity.pitch - 315.0).abs() < 0.001);
+        assert_eq!(entity.metadata.get(&0), Some(&EntityMetadataValue::Byte(7)));
+        assert!(entity.velocity.iter().all(|v| *v == 0.0));
+    }
+
+    #[test]
+    fn decodes_spawn_mob_all_datawatcher_value_types() {
+        let mut payload = Vec::new();
+        write_varint(25, &mut payload);
+        payload.push(54);
+        payload.extend_from_slice(&320_i32.to_be_bytes());
+        payload.extend_from_slice(&640_i32.to_be_bytes());
+        payload.extend_from_slice(&960_i32.to_be_bytes());
+        payload.extend_from_slice(&[32, 64, 192]);
+        payload.extend_from_slice(&8000_i16.to_be_bytes());
+        payload.extend_from_slice(&(-4000_i16).to_be_bytes());
+        payload.extend_from_slice(&16000_i16.to_be_bytes());
+        payload.extend_from_slice(&[0x01, 2]);
+        payload.push(0x24); payload.extend_from_slice(&(-12_i16).to_be_bytes());
+        payload.push(0x43); payload.extend_from_slice(&99_i32.to_be_bytes());
+        payload.push(0x65); payload.extend_from_slice(&1.5_f32.to_bits().to_be_bytes());
+        payload.push(0x86); write_string("Zombie", &mut payload);
+        payload.extend_from_slice(&[0xA7, 0, 5, 1, 0, 0, 0]);
+        payload.push(0xC8);
+        payload.extend_from_slice(&1_i32.to_be_bytes());
+        payload.extend_from_slice(&2_i32.to_be_bytes());
+        payload.extend_from_slice(&3_i32.to_be_bytes());
+        payload.push(0x7f);
+        let entity = decode_spawn_mob(&payload).unwrap();
+        assert_eq!(entity.entity_id, 25);
+        assert_eq!(entity.kind, EntityKind::Mob { mob_type: 54 });
+        assert_eq!(entity.position, [10.0, 20.0, 30.0]);
+        assert_eq!(entity.velocity, [1.0, -0.5, 2.0]);
+        assert_eq!(entity.metadata.get(&1), Some(&EntityMetadataValue::Byte(2)));
+        assert_eq!(entity.metadata.get(&4), Some(&EntityMetadataValue::Short(-12)));
+        assert_eq!(entity.metadata.get(&3), Some(&EntityMetadataValue::Int(99)));
+        assert_eq!(entity.metadata.get(&5), Some(&EntityMetadataValue::Float(1.5)));
+        assert_eq!(entity.metadata.get(&6), Some(&EntityMetadataValue::String("Zombie".into())));
+        assert!(matches!(entity.metadata.get(&7), Some(EntityMetadataValue::ItemStack(Some(stack))) if stack.item_id == 5 && stack.count == 1));
+        assert_eq!(entity.metadata.get(&8), Some(&EntityMetadataValue::Coordinates([1, 2, 3])));
+    }
+
+    #[test]
+    fn object_spawn_only_reads_velocity_when_data_is_positive() {
+        let mut without_velocity = Vec::new();
+        write_varint(7, &mut without_velocity);
+        without_velocity.push(2);
+        without_velocity.extend_from_slice(&[32_i32.to_be_bytes(), 64_i32.to_be_bytes(), 96_i32.to_be_bytes()].concat());
+        without_velocity.extend_from_slice(&[32, 64]); // pitch, yaw
+        without_velocity.extend_from_slice(&0_i32.to_be_bytes());
+        let entity = decode_spawn_object(&without_velocity).unwrap();
+        assert_eq!(entity.kind, EntityKind::Object { object_type: 2, data: 0 });
+        assert_eq!(entity.position, [1.0, 2.0, 3.0]);
+        assert!((entity.pitch - 45.0).abs() < 0.001);
+        assert!((entity.yaw - 90.0).abs() < 0.001);
+        assert_eq!(entity.velocity, [0.0; 3]);
+
+        let mut with_velocity = without_velocity;
+        with_velocity[with_velocity.len() - 4..].copy_from_slice(&1_i32.to_be_bytes());
+        with_velocity.extend_from_slice(&10_i16.to_be_bytes());
+        with_velocity.extend_from_slice(&(-20_i16).to_be_bytes());
+        with_velocity.extend_from_slice(&30_i16.to_be_bytes());
+        let entity = decode_spawn_object(&with_velocity).unwrap();
+        assert_eq!(entity.velocity, [0.00125, -0.0025, 0.00375]);
+    }
+
+    #[test]
+    fn decodes_entity_relative_look_teleport_head_look_and_destroy() {
+        let mut relative = Vec::new();
+        write_varint(9, &mut relative);
+        relative.extend_from_slice(&[(-32_i8) as u8, 64, 16, 1]);
+        assert_eq!(decode_entity_relative_move(&relative).unwrap(), EntityEvent::RelativeMove {
+            entity_id: 9, delta: [-1.0, 2.0, 0.5], rotation: None, on_ground: true
+        });
+
+        let mut look = Vec::new();
+        write_varint(9, &mut look);
+        look.extend_from_slice(&[192, 32, 0]);
+        assert_eq!(decode_entity_look(&look).unwrap(), EntityEvent::RelativeMove {
+            entity_id: 9, delta: [0.0; 3], rotation: Some((270.0, 45.0)), on_ground: false
+        });
+
+        let mut both = Vec::new();
+        write_varint(9, &mut both);
+        both.extend_from_slice(&[32, 0, (-32_i8) as u8, 64, 128, 1]);
+        assert_eq!(decode_entity_look_move(&both).unwrap(), EntityEvent::RelativeMove {
+            entity_id: 9, delta: [1.0, 0.0, -1.0], rotation: Some((90.0, 180.0)), on_ground: true
+        });
+
+        let mut teleport = Vec::new();
+        write_varint(9, &mut teleport);
+        teleport.extend_from_slice(&(-32_i32).to_be_bytes());
+        teleport.extend_from_slice(&320_i32.to_be_bytes());
+        teleport.extend_from_slice(&96_i32.to_be_bytes());
+        teleport.extend_from_slice(&[64, 128, 1]);
+        assert_eq!(decode_entity_teleport(&teleport).unwrap(), EntityEvent::Teleport {
+            entity_id: 9, position: [-1.0, 10.0, 3.0], yaw: 90.0, pitch: 180.0, on_ground: true
+        });
+
+        let mut head = Vec::new();
+        write_varint(9, &mut head);
+        head.push(64);
+        assert_eq!(decode_entity_head_look(&head).unwrap(), EntityEvent::HeadLook { entity_id: 9, yaw: 90.0 });
+
+        let mut destroy = Vec::new();
+        write_varint(3, &mut destroy);
+        write_varint(9, &mut destroy); write_varint(10, &mut destroy); write_varint(11, &mut destroy);
+        assert_eq!(decode_destroy_entities(&destroy).unwrap(), vec![9, 10, 11]);
+    }
+
+    #[test]
+    fn rejects_invalid_entity_metadata_and_bad_entity_packet_flags() {
+        let mut metadata = Vec::new();
+        write_varint(1, &mut metadata);
+        metadata.extend_from_slice(&[0xE0, 0x7f]);
+        assert!(decode_entity_metadata(&metadata).is_err());
+        assert!(decode_entity_metadata(&[0x01]).is_err());
+
+        let mut invalid_ground = Vec::new();
+        write_varint(1, &mut invalid_ground);
+        invalid_ground.extend_from_slice(&[0, 0, 0, 2]);
+        assert!(decode_entity_relative_move(&invalid_ground).is_err());
+
+        let mut oversized_destroy = Vec::new();
+        write_varint(4097, &mut oversized_destroy);
+        assert!(decode_destroy_entities(&oversized_destroy).is_err());
+    }
+    #[test]
     fn parses_host_ports() {
         assert_eq!(parse_host_port("play.example.net:25565").unwrap(), ("play.example.net".into(), 25565));
         assert_eq!(parse_host_port("[::1]:25566").unwrap(), ("::1".into(), 25566));

@@ -289,6 +289,43 @@ fn first_boundary(origin: f64, voxel: i32, direction: f64, step: i32) -> f64 {
 mod tests {
     use super::*;
     #[test]
+    fn tracks_spawned_entities_and_applies_server_updates() {
+        let mut world = World::new();
+        let entity = EntityState {
+            entity_id: 77,
+            kind: EntityKind::Mob { mob_type: 54 },
+            position: [1.0, 2.0, 3.0],
+            yaw: 0.0, pitch: 0.0, head_yaw: 0.0,
+            velocity: [0.0; 3], on_ground: false,
+            metadata: std::collections::BTreeMap::new(),
+        };
+        world.apply_entity_event(EntityEvent::Spawn(entity));
+        assert_eq!(world.entity_count(), 1);
+        assert_eq!(world.get_entity(77).unwrap().position, [1.0, 2.0, 3.0]);
+
+        world.apply_entity_event(EntityEvent::RelativeMove {
+            entity_id: 77, delta: [0.5, -1.0, 2.0], rotation: Some((90.0, 45.0)), on_ground: true
+        });
+        let entity = world.get_entity(77).unwrap();
+        assert_eq!(entity.position, [1.5, 1.0, 5.0]);
+        assert_eq!((entity.yaw, entity.pitch, entity.on_ground), (90.0, 45.0, true));
+
+        world.apply_entity_event(EntityEvent::HeadLook { entity_id: 77, yaw: 180.0 });
+        assert_eq!(world.get_entity(77).unwrap().head_yaw, 180.0);
+        let mut metadata = std::collections::BTreeMap::new();
+        metadata.insert(2, EntityMetadataValue::String("name tag".into()));
+        world.apply_entity_event(EntityEvent::Metadata { entity_id: 77, entries: metadata });
+        assert_eq!(world.get_entity(77).unwrap().metadata.get(&2), Some(&EntityMetadataValue::String("name tag".into())));
+
+        world.apply_entity_event(EntityEvent::Teleport {
+            entity_id: 77, position: [10.0, 20.0, 30.0], yaw: 270.0, pitch: 0.0, on_ground: false
+        });
+        assert_eq!(world.get_entity(77).unwrap().position, [10.0, 20.0, 30.0]);
+        world.apply_entity_event(EntityEvent::Destroy(vec![77, 999]));
+        assert_eq!(world.entity_count(), 0);
+        assert!(world.get_entity(77).is_none());
+    }
+    #[test]
     fn applies_decoded_chunk_and_reads_packed_light_nibbles() {
         let mut blocks = vec![0_u16; 4096];
         blocks[(1 << 8) | (2 << 4) | 3] = 0x1234;
