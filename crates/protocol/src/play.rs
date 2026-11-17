@@ -195,11 +195,11 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
         },
         0x26 => {
             let sky_light = r.bool()?;
-            let count = r.varint()?;
-            if !(0..=1024).contains(&count) {
+            let count = usize::from(r.u16()?);
+            if count > 1024 {
                 return Err("invalid map-chunk-bulk column count".into());
             }
-            let mut metadata = Vec::with_capacity(count as usize);
+            let mut metadata = Vec::with_capacity(count);
             for _ in 0..count {
                 let x = r.i32()?;
                 let z = r.i32()?;
@@ -373,7 +373,7 @@ mod tests {
     #[test]
     fn decodes_bulk_chunk_packet_with_shared_skylight_flag() {
         let mut p = vec![0x26, 1]; // sky light sent
-        encode_varint(1, &mut p);
+        p.extend_from_slice(&1_u16.to_be_bytes());
         p.extend_from_slice(&(-4_i32).to_be_bytes());
         p.extend_from_slice(&7_i32.to_be_bytes());
         p.extend_from_slice(&1_u16.to_be_bytes());
