@@ -1,7 +1,7 @@
 mod status;
 mod login;
 
-use game::{decode_chunk_column, BlockPos, BlockState, ChunkPos, InventoryItem, PlayerMovement, ServerAction, ServerEvent};
+use game::{decode_chunk_column, BlockPos, BlockState, ChunkPos, EntityState, InventoryItem, PlayerMovement, ServerAction, ServerEvent};
 use protocol::{encode_varint, PlayPacket};
 use std::{io::{self, BufRead, Write}, sync::mpsc, thread};
 use renderer::RenderConfig;
@@ -298,6 +298,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             if event_tx.send(ServerEvent::HeldItemChange { slot: *slot }).is_err() {
                                 break;
                             }
+                        }
+                        PlayPacket::SpawnObject { entity_id, object_type, x, y, z, pitch, yaw, .. } => {
+                            let entity = EntityState {
+                                entity_id: *entity_id,
+                                object_type: *object_type,
+                                position: [f64::from(*x) / 32.0, f64::from(*y) / 32.0, f64::from(*z) / 32.0],
+                                yaw: f32::from(*yaw) * (360.0 / 256.0),
+                                pitch: f32::from(*pitch) * (360.0 / 256.0),
+                            };
+                            if event_tx.send(ServerEvent::EntitySpawn(entity)).is_err() { break; }
+                        }
+                        PlayPacket::EntityRelativeMove { entity_id, delta, on_ground } => {
+                            let delta = delta.map(|value| f64::from(value) / 32.0);
+                            if event_tx.send(ServerEvent::EntityMove { entity_id: *entity_id, delta, on_ground: *on_ground }).is_err() { break; }
+                        }
+                        PlayPacket::EntityTeleport { entity_id, x, y, z, yaw, pitch, .. } => {
+                            let entity = EntityState {
+                                entity_id: *entity_id,
+                                object_type: 0,
+                                position: [f64::from(*x) / 32.0, f64::from(*y) / 32.0, f64::from(*z) / 32.0],
+                                yaw: f32::from(*yaw) * (360.0 / 256.0),
+                                pitch: f32::from(*pitch) * (360.0 / 256.0),
+                            };
+                            if event_tx.send(ServerEvent::EntityTeleport(entity)).is_err() { break; }
+                        }
+                        PlayPacket::DestroyEntities { entity_ids } => {
+                            if event_tx.send(ServerEvent::EntityRemove(entity_ids.clone())).is_err() { break; }
                         }
                         PlayPacket::ChatMessage { json, position } => {
                             eprintln!("[CHAT:{position}] {}", plain_chat_text(&json));
