@@ -323,7 +323,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let entity = EntityState {
                                 entity_id: *entity_id,
                                 object_type: *object_type,
-                                position: [f64::from(*x) / 32.0, f64::from(*y) / 32.0, f64::from(*z) / 32.0],
+                                position: [*x, *y, *z],
                                 yaw: f32::from(*yaw) * (360.0 / 256.0),
                                 pitch: f32::from(*pitch) * (360.0 / 256.0),
                             };
