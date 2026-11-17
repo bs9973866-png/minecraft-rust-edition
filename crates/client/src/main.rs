@@ -333,6 +333,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             let delta = delta.map(|value| f64::from(value) / 32.0);
                             if event_tx.send(ServerEvent::EntityMove { entity_id: *entity_id, delta, on_ground: *on_ground }).is_err() { break; }
                         }
+                        PlayPacket::EntityLook { entity_id, yaw, pitch, .. } => {
+                            let yaw = f32::from(*yaw) * (360.0 / 256.0);
+                            let pitch = f32::from(*pitch) * (360.0 / 256.0);
+                            if event_tx.send(ServerEvent::EntityLook { entity_id: *entity_id, yaw, pitch }).is_err() { break; }
+                        }
+                        PlayPacket::EntityMoveLook { entity_id, delta, yaw, pitch, on_ground } => {
+                            let delta = delta.map(|value| f64::from(value) / 32.0);
+                            let yaw = f32::from(*yaw) * (360.0 / 256.0);
+                            let pitch = f32::from(*pitch) * (360.0 / 256.0);
+                            if event_tx.send(ServerEvent::EntityMove { entity_id: *entity_id, delta, on_ground: *on_ground }).is_err() { break; }
+                            if event_tx.send(ServerEvent::EntityLook { entity_id: *entity_id, yaw, pitch }).is_err() { break; }
+                        }
                         PlayPacket::EntityTeleport { entity_id, x, y, z, yaw, pitch, .. } => {
                             let entity = EntityState {
                                 entity_id: *entity_id,
