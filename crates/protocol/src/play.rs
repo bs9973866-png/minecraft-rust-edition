@@ -88,7 +88,7 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
             let packed = r.i64()?;
             let x = sign_extend((packed >> 38) as i32, 26);
             let y = sign_extend(((packed >> 26) & 0xfff) as i32, 12);
-            let z = sign_extend((packed << 26 >> 38) as i32, 26);
+            let z = sign_extend((packed & 0x03ff_ffff) as i32, 26);
             PlayPacket::SpawnPosition { x, y, z }
         }
         0x06 => PlayPacket::UpdateHealth { health: r.f32()?, food: r.i32()?, food_saturation: r.f32()? },
