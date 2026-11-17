@@ -74,6 +74,13 @@ pub struct DecodedChunkColumn {
     pub biomes: Option<Vec<u8>>,
 }
 
+/// Events delivered from the protocol worker to the render/game thread.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ServerEvent {
+    ChunkColumn(DecodedChunkColumn),
+    Teleport([f32; 3]),
+}
+
 /// Decode the raw S21PacketChunkData data array for protocol 47.
 ///
 /// In 1.8 the data array stores every present section's block states first,
@@ -528,6 +535,11 @@ impl PlayerPhysics {
     pub fn position(&self) -> [f32; 3] { self.position }
     pub fn velocity(&self) -> [f32; 3] { self.velocity }
     pub fn on_ground(&self) -> bool { self.on_ground }
+    pub fn teleport(&mut self, feet_position: [f32; 3]) {
+        self.position = feet_position;
+        self.velocity = [0.0; 3];
+        self.on_ground = false;
+    }
 
     fn collides(world: &World, p: [f32; 3]) -> bool {
         let min_x = (p[0] - Self::HALF_WIDTH).floor() as i32;
