@@ -93,6 +93,19 @@ impl World {
     pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> { self.chunks.get(&pos) }
     pub fn chunk_count(&self) -> usize { self.chunks.len() }
     pub fn chunk_positions(&self) -> impl Iterator<Item = ChunkPos> + '_ { self.chunks.keys().copied() }
+    pub fn chunk_blocks(&self, pos: ChunkPos) -> Vec<BlockPos> {
+        let Some(chunk) = self.chunks.get(&pos) else { return Vec::new(); };
+        chunk.blocks.keys().map(|index| {
+            let x = index % CHUNK_WIDTH;
+            let z = (index / CHUNK_WIDTH) % CHUNK_WIDTH;
+            let y = index / (CHUNK_WIDTH * CHUNK_WIDTH);
+            BlockPos::new(
+                pos.x * CHUNK_WIDTH as i32 + x as i32,
+                y as i32,
+                pos.z * CHUNK_WIDTH as i32 + z as i32,
+            )
+        }).collect()
+    }
     pub fn contains(&self, pos: BlockPos) -> bool { self.block(pos).0 != 0 }
 
     pub fn block(&self, pos: BlockPos) -> BlockState {
