@@ -37,20 +37,111 @@ pub struct RayHit {
     pub distance_steps: u32,
 }
 
-/// Sparse block world. Empty positions are not stored.
+/// Classic 1.8.9 chunk dimensions.
+pub const CHUNK_WIDTH: usize = 16;
+pub const CHUNK_HEIGHT: usize = 256;
+
+/// A sparse 16×256×16 chunk. Only non-air blocks occupy memory.
+#[derive(Debug, Default, Clone)]
+pub struct Chunk {
+    blocks: std::collections::HashMap<usize, BlockState>,
+}
+
+impl Chunk {
+    fn index(x: usize, y: usize, z: usize) -> usize {
+        (y * CHUNK_WIDTH + z) * CHUNK_WIDTH + x
+    }
+
+    pub fn get(&self, x: usize, y: usize, z: usize) -> BlockState {
+        if x >= CHUNK_WIDTH || z >= CHUNK_WIDTH || y >= CHUNK_HEIGHT {
+            return BlockState(0);
+        }
+        self.blocks.get(&Self::index(x, y, z)).copied().unwrap_or_default()
+    }
+
+    pub fn set(&mut self, x: usize, y: usize, z: usize, state: BlockState) -> bool {
+        if x >= CHUNK_WIDTH || z >= CHUNK_WIDTH || y >= CHUNK_HEIGHT {
+            return false;
+        }
+        let index = Self::index(x, y, z);
+        if state.0 == 0 { self.blocks.remove(&index); }
+        else { self.blocks.insert(index, state); }
+        true
+    }
+
+    pub fn non_air_count(&self) -> usize { self.blocks.len() }
+    pub fn is_empty(&self) -> bool { self.blocks.is_empty() }
+}
+
+/// Sparse world backed by 16×256×16 chunks. Empty chunks are not retained.
 #[derive(Debug, Default, Clone)]
 pub struct World {
-    blocks: HashSet<BlockPos>,
+    chunks: std::collections::HashMap<ChunkPos, Chunk>,
+    block_count: usize,
 }
 
 impl World {
     pub fn new() -> Self { Self::default() }
-    pub fn contains(&self, pos: BlockPos) -> bool { self.blocks.contains(&pos) }
-    pub fn set_solid(&mut self, pos: BlockPos) { self.blocks.insert(pos); }
-    pub fn remove(&mut self, pos: BlockPos) -> bool { self.blocks.remove(&pos) }
-    pub fn iter(&self) -> impl Iterator<Item = BlockPos> + '_ { self.blocks.iter().copied() }
-    pub fn len(&self) -> usize { self.blocks.len() }
-    pub fn is_empty(&self) -> bool { self.blocks.is_empty() }
+
+    fn chunk_and_local(pos: BlockPos) -> Option<(ChunkPos, usize, usize)> {
+        if pos.y < 0 || pos.y >= CHUNK_HEIGHT as i32 { return None; }
+        Some((
+            ChunkPos::from_block(pos.x, pos.z),
+            pos.x.rem_euclid(CHUNK_WIDTH as i32) as usize,
+            pos.z.rem_euclid(CHUNK_WIDTH as i32) as usize,
+        ))
+    }
+
+    pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> { self.chunks.get(&pos) }
+    pub fn chunk_count(&self) -> usize { self.chunks.len() }
+    pub fn contains(&self, pos: BlockPos) -> bool { self.block(pos).0 != 0 }
+
+    pub fn block(&self, pos: BlockPos) -> BlockState {
+        let Some((chunk_pos, x, z)) = Self::chunk_and_local(pos) else { return BlockState(0); };
+        self.chunks.get(&chunk_pos)
+            .map(|chunk| chunk.get(x, pos.y as usize, z))
+            .unwrap_or_default()
+    }
+
+    pub fn set_block(&mut self, pos: BlockPos, state: BlockState) -> bool {
+        let Some((chunk_pos, x, z)) = Self::chunk_and_local(pos) else { return false; };
+        if state.0 == 0 { return self.remove(pos); }
+        let chunk = self.chunks.entry(chunk_pos).or_default();
+        let previous = chunk.get(x, pos.y as usize, z);
+        let _ = chunk.set(x, pos.y as usize, z, state);
+        if previous.0 == 0 { self.block_count += 1; }
+        true
+    }
+
+    pub fn set_solid(&mut self, pos: BlockPos) { let _ = self.set_block(pos, BlockState(1)); }
+
+    pub fn remove(&mut self, pos: BlockPos) -> bool {
+        let Some((chunk_pos, x, z)) = Self::chunk_and_local(pos) else { return false; };
+        let Some(chunk) = self.chunks.get_mut(&chunk_pos) else { return false; };
+        if chunk.get(x, pos.y as usize, z).0 == 0 { return false; }
+        let _ = chunk.set(x, pos.y as usize, z, BlockState(0));
+        self.block_count -= 1;
+        if chunk.is_empty() { self.chunks.remove(&chunk_pos); }
+        true
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = BlockPos> + '_ {
+        self.chunks.iter().flat_map(|(chunk_pos, chunk)| {
+            chunk.blocks.iter().map(move |(index, _state)| {
+                let x = index % CHUNK_WIDTH;
+                let z = (index / CHUNK_WIDTH) % CHUNK_WIDTH;
+                let y = index / (CHUNK_WIDTH * CHUNK_WIDTH);
+                BlockPos::new(
+                    chunk_pos.x * CHUNK_WIDTH as i32 + x as i32,
+                    y as i32,
+                    chunk_pos.z * CHUNK_WIDTH as i32 + z as i32,
+                )
+            })
+        })
+    }
+
+    pub fn len(&self) -> usize { self.block_count }
+    pub fn is_empty(&self) -> bool { self.block_count == 0 }
 
     /// Creates a deterministic 9×9 test island with a few raised blocks.
     pub fn demo() -> Self {
@@ -83,7 +174,6 @@ impl World {
                 t_max[axis] = (boundary - origin[axis]) / dir[axis];
             }
         }
-
         let mut face = [0, 0, 0];
         let mut steps = 0;
         loop {
@@ -102,7 +192,6 @@ impl World {
         }
     }
 }
-
 
 
 /// Nine-slot quick-access bar. Slot values are block-state IDs; zero is empty.
