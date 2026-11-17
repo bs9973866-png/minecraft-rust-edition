@@ -145,13 +145,22 @@ pub fn run_window() -> Result<(), String> {
     let mut gpu = pollster::block_on(GpuState::new(window.clone()))?;
     eprintln!("Rust Edition GPU renderer initialized.");
 
-    event_loop.set_control_flow(ControlFlow::Poll);
+    // This milestone renders a static clear frame. Wait for OS events instead
+    // of spinning a busy loop and wasting CPU while the scene is unchanged.
+    event_loop.set_control_flow(ControlFlow::Wait);
+    window.request_redraw();
     let result = event_loop.run(move |event, target| {
         match event {
             Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
                 WindowEvent::CloseRequested => target.exit(),
-                WindowEvent::Resized(size) => gpu.resize(size),
-                WindowEvent::ScaleFactorChanged { .. } => gpu.resize(window.inner_size()),
+                WindowEvent::Resized(size) => {
+                    gpu.resize(size);
+                    window.request_redraw();
+                }
+                WindowEvent::ScaleFactorChanged { .. } => {
+                    gpu.resize(window.inner_size());
+                    window.request_redraw();
+                }
                 WindowEvent::RedrawRequested => match gpu.render() {
                     Ok(()) => {}
                     Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
@@ -162,7 +171,7 @@ pub fn run_window() -> Result<(), String> {
                 },
                 _ => {}
             },
-            Event::AboutToWait => window.request_redraw(),
+            Event::AboutToWait => {},
             _ => {}
         }
     });
