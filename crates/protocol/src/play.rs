@@ -23,6 +23,8 @@ pub enum PlayPacket {
     SpawnObject { entity_id: i32, object_type: u8, x: f64, y: f64, z: f64, pitch: u8, yaw: u8, data: i32, velocity: Option<[i16; 3]> },
     DestroyEntities { entity_ids: Vec<i32> },
     EntityRelativeMove { entity_id: i32, delta: [i8; 3], on_ground: bool },
+    EntityLook { entity_id: i32, yaw: u8, pitch: u8, on_ground: bool },
+    EntityMoveLook { entity_id: i32, delta: [i8; 3], yaw: u8, pitch: u8, on_ground: bool },
     EntityTeleport { entity_id: i32, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, on_ground: bool },
     KeepAlive { id: i32 },
     Unknown { id: i32, payload: Vec<u8> },
@@ -355,6 +357,14 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
             delta: [r.i8()?, r.i8()?, r.i8()?],
             on_ground: r.bool()?,
         },
+        0x16 => PlayPacket::EntityLook {
+            entity_id: r.varint()?, yaw: r.u8()?, pitch: r.u8()?, on_ground: r.bool()?,
+        },
+        0x17 => PlayPacket::EntityMoveLook {
+            entity_id: r.varint()?,
+            delta: [r.i8()?, r.i8()?, r.i8()?],
+            yaw: r.u8()?, pitch: r.u8()?, on_ground: r.bool()?,
+        },
         0x18 => PlayPacket::EntityTeleport {
             entity_id: r.varint()?,
             x: r.i32()?,
@@ -468,6 +478,23 @@ mod tests {
         movement.push(1);
         assert_eq!(decode_play_packet(&movement).unwrap(),
             PlayPacket::EntityRelativeMove { entity_id: 7, delta: [-1, 2, 3], on_ground: true });
+    }
+
+    #[test]
+    fn decodes_entity_look_and_combined_move_look() {
+        let mut look = vec![0x16];
+        encode_varint(9, &mut look);
+        look.extend_from_slice(&[64, 128, 1]);
+        assert_eq!(decode_play_packet(&look).unwrap(), PlayPacket::EntityLook {
+            entity_id: 9, yaw: 64, pitch: 128, on_ground: true,
+        });
+
+        let mut move_look = vec![0x17];
+        encode_varint(9, &mut move_look);
+        move_look.extend_from_slice(&[1_u8, (-2_i8) as u8, 3, 32, 96, 0]);
+        assert_eq!(decode_play_packet(&move_look).unwrap(), PlayPacket::EntityMoveLook {
+            entity_id: 9, delta: [1, -2, 3], yaw: 32, pitch: 96, on_ground: false,
+        });
     }
 
     #[test]
