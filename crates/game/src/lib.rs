@@ -331,6 +331,44 @@ mod tests {
     }
 
     #[test]
+    fn chunk_storage_handles_boundaries_and_negative_coordinates() {
+        let mut world = World::new();
+        let positions = [
+            BlockPos::new(15, 0, 15),
+            BlockPos::new(16, 255, 16),
+            BlockPos::new(-1, 64, -1),
+            BlockPos::new(-16, 128, -16),
+        ];
+        for pos in positions { assert!(world.set_block(pos, BlockState(7))); }
+        for pos in positions { assert_eq!(world.block(pos), BlockState(7)); }
+        assert_eq!(world.chunk_count(), 4);
+        assert_eq!(world.len(), 4);
+    }
+
+    #[test]
+    fn chunk_storage_rejects_out_of_height_blocks() {
+        let mut world = World::new();
+        assert!(!world.set_block(BlockPos::new(0, -1, 0), BlockState(1)));
+        assert!(!world.set_block(BlockPos::new(0, 256, 0), BlockState(1)));
+        assert_eq!(world.chunk_count(), 0);
+        assert!(world.is_empty());
+    }
+
+    #[test]
+    fn chunk_storage_updates_states_and_reclaims_empty_chunks() {
+        let mut world = World::new();
+        let pos = BlockPos::new(-17, 42, 32);
+        assert!(world.set_block(pos, BlockState(2)));
+        assert!(world.set_block(pos, BlockState(3)));
+        assert_eq!(world.len(), 1);
+        assert_eq!(world.block(pos), BlockState(3));
+        assert!(world.remove(pos));
+        assert!(world.is_empty());
+        assert_eq!(world.chunk_count(), 0);
+        assert!(!world.remove(pos));
+    }
+
+    #[test]
     fn world_adds_and_removes_blocks() {
         let mut world = World::new();
         let pos = BlockPos::new(1, 2, 3);
