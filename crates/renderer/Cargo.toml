@@ -12,3 +12,4 @@ path = "src/lib.rs"
 wgpu = "0.19.4"
 winit = "0.29.15"
 pollster = "0.3"
+bytemuck = { version = "1.15", features = ["derive"] }
