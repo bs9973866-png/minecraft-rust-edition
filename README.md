@@ -6,7 +6,7 @@ A clean-room Rust reimplementation project targeting compatibility with Minecraf
 
 ## Project status
 
-Early multiplayer-capable prototype — the native window, procedural local terrain, first-person movement, collision, hotbar HUD, status ping, offline-mode Login, and a persistent protocol-47 Play connection are implemented. The Play connection receives and reports selected server packets and answers Keep Alive and position corrections, but it is not yet connected to the renderer or a complete playable multiplayer world.
+Early multiplayer prototype — the native client can join offline-mode protocol-47 servers, decode and render server chunk columns, apply block updates and teleports, send player movement, mine blocks, and send empty-hand right-click interactions. It is not yet a complete Minecraft 1.8.9 implementation: inventory synchronization, actual held-item block placement, online-mode authentication, entities, and many gameplay systems remain.
 
 ## Goals
 
@@ -24,26 +24,21 @@ Early multiplayer-capable prototype — the native window, procedural local terr
 - `crates/client` — game client executable.
 - `crates/launcher` — small desktop launcher with a saved offline nickname.
 
-## Current milestone: live protocol-47 Play session
+## Current milestone: server-backed world window
 
-`rust-edition-client --play HOST[:PORT] --username NAME` now performs the protocol-47 handshake, completes offline-mode login, and keeps the TCP connection open in Play state. It enables zlib packet compression when requested by the server, sends Client Settings, decodes Join Game, Chat Message, Time Update, Spawn Position, Update Health, Player Position And Look, Chunk Data and Keep Alive, preserves unknown packet payloads, replies to Keep Alive, and acknowledges absolute/relative server position corrections.
+Start the game against an offline-mode Minecraft Java 1.8.9 server:
 
-The Play session supports offline-mode servers only. Servers requiring Microsoft/Mojang online-mode encryption are rejected clearly; authentication is not bypassed. Chunk Data is currently retained as raw bytes and reported to the console; it is not yet decoded into blocks or displayed in the renderer. This is a real protocol connection milestone, not yet full multiplayer gameplay.
+```powershell
+cargo run -p rust-edition-client -- --join play.example.net:25565 --username Player
+```
 
-The game crate now stores world blocks in sparse 16×256×16 chunks (the classic 1.8.9 vertical build range). Chunks are created only when a non-air block is written and reclaimed when emptied. World coordinates map correctly across positive and negative chunk boundaries, and block states are stored per cell. A deterministic, seed-based heightmap generator creates rolling stone/dirt/grass terrain and simple trees, with generation performed in two passes so tree canopies can cross chunk borders. The renderer uses a five-by-five chunk test region, starts the player above the generated surface, colors the basic block types differently, and keeps a separate GPU vertex buffer for each chunk. First-person controls now use continuous time-based movement while keys are held, and relative mouse motion rotates the camera with a captured cursor.
+The `--join` mode performs protocol-47 login, keeps the connection alive, receives full and partial chunk columns (including bulk chunk packets), decodes legacy 1.8 block IDs/metadata, and renders the received server world in the native 3D window. Server block-change packets and server teleports are applied to the rendered world/player. WASD movement and camera rotation are sent to the server at 20 updates per second after the initial server teleport. Hold the left mouse button to send start/finish/cancel digging actions. Right-click sends a protocol-47 empty-hand block interaction, suitable for interacting with things such as doors, buttons, and containers when the server permits it.
 
-Controls in `--window` mode:
+This is still an early multiplayer implementation. The client does not yet synchronize inventory or held items, so right-click block placement with an item is not implemented; the interaction packet intentionally reports an empty hand rather than pretending the player has an item. Microsoft/Mojang online-mode encryption and authenticated login are not implemented, so servers requiring online-mode authentication will reject this client. The client does not yet implement entity rendering, complete chat UI, all gameplay packets, vanilla movement physics, or full server compatibility.
 
-- `W`, `A`, `S`, `D`: move horizontally
-- Mouse: look around (cursor is captured)
-- `Space`: jump
-- `1`–`9`: select a hotbar slot
-- Mouse wheel: cycle through hotbar slots
-- Left mouse button: remove the block under the crosshair ray
-- Right mouse button: place a block on the face being targeted
-- `Escape`: close the window
+The standalone local `--window` mode remains available for the procedural test world. Its controls are WASD, mouse look, Space to jump, 1–9 or mouse wheel to select a hotbar slot, left click to break, right click to place locally, and Escape to quit.
 
-The game crate now includes a nine-slot hotbar data model with selection, wraparound scrolling, and slot state IDs. The renderer draws a crosshair and a nine-slot HUD overlay (temporary placeholder icons, not Minecraft item textures). The game crate also includes a basic player AABB, gravity, jumping, and axis-separated block collision. The renderer starts the player above the generated terrain and uses Space to jump. This is still an early physics prototype: it does not yet include Minecraft's exact movement constants, step-up behavior, swimming, ladders, sprinting, or multiplayer prediction. The renderer now creates a separate GPU vertex buffer for each loaded chunk. Editing a block rebuilds only its owning chunk mesh and the directly adjacent chunk mesh when the edit touches a chunk boundary. Mesh generation enumerates only blocks stored in the target chunk, while face visibility still checks neighboring world blocks. The terrain generator is a small original prototype, not Minecraft's vanilla 1.8.9 generator. It does not yet load real server chunk packets, biomes, texture atlases, caves, ores, water, or the complete vanilla block palette.
+The game crate stores sparse 16×256×16 chunks and decodes protocol-47 section data into legacy block states. The renderer maintains per-chunk GPU meshes and rebuilds affected chunk meshes when server block updates arrive. The terrain generator used by local `--window` mode is an original test generator, not Minecraft's vanilla world generator. Texture atlases, official resource-pack support, caves, ores, fluids, full block models, and many vanilla mechanics remain future work.
 
 ## Simple launcher
 
@@ -96,7 +91,7 @@ cargo test --workspace
 
 ## Compatibility note
 
-This project is an early prototype. Full gameplay, online-mode authentication, real server chunk-to-block decoding, multiplayer world rendering, client movement/input synchronization, inventory interaction, entities, and broad server compatibility remain unimplemented and must be verified against real 1.8.9 servers.
+This project is an early prototype. Full gameplay, online-mode authentication, inventory and held-item synchronization, item-based block placement, entity rendering, complete vanilla mechanics, and broad server compatibility remain unimplemented and must be verified against real 1.8.9 servers.
 
 
 ### Offline-mode server login prototype
