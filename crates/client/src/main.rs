@@ -19,7 +19,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .map(String::as_str)
             .unwrap_or("Player");
         println!("Offline profile: {username}");
-        renderer::run_window().map_err(|error| format!("renderer: {error}"))?;
+        renderer::run_window_with_username(username).map_err(|error| format!("renderer: {error}"))?;
         return Ok(());
     }
 
