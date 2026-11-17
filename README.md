@@ -23,18 +23,20 @@ Early development — repository scaffold and architecture are being established
 - `crates/renderer` — GPU rendering and resource management.
 - `crates/client` — desktop application and orchestration.
 
-## Current milestone: movable 3D camera
+## Current milestone: editable voxel test world
 
-The voxel demo now uses a perspective view-projection matrix and a GPU uniform buffer. The camera can move around the test terrain and rotate, rather than being locked to the original isometric view.
+The client now uses a separate sparse world model in the game crate. It supports block coordinates, adding/removing solid blocks, and voxel DDA raycasting. The renderer builds visible cube faces from that world and updates its GPU vertex buffer after edits.
 
 Controls in `--window` mode:
 
 - `W`, `A`, `S`, `D`: move horizontally
 - Arrow keys: look around
 - `Space` / `Shift`: move up / down
+- Left mouse button: remove the block under the crosshair ray
+- Right mouse button: place a block on the face being targeted
 - `Escape`: close the window
 
-The scene is still generated test terrain, not Minecraft's real terrain generator, texture atlas, chunk data, player physics, or multiplayer world.
+The current scene remains generated test terrain. It is not yet Minecraft's actual chunk data, textures, terrain generator, player collision/physics, or multiplayer world.
 
 Run it with:
 
