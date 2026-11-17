@@ -132,6 +132,27 @@ impl World {
         if chunk_is_empty { self.chunks.remove(&chunk_pos); }
     }
     pub fn remove_chunk(&mut self, position: ChunkPos) -> Option<Chunk> { self.chunks.remove(&position) }
+    /// Apply many decoded columns in wire order.
+    pub fn apply_chunk_batch<I>(&mut self, chunks: I) -> Result<(), WorldError>
+    where
+        I: IntoIterator<Item = ChunkColumnData>,
+    {
+        for chunk in chunks { self.apply_chunk_data(chunk)?; }
+        Ok(())
+    }
+
+    /// Apply one authoritative block update from the server.
+    pub fn apply_block_change(&mut self, position: BlockPos, state: BlockState) {
+        self.set_block(position, state);
+    }
+
+    /// Apply a batch of authoritative server block updates.
+    pub fn apply_block_changes<I>(&mut self, updates: I)
+    where
+        I: IntoIterator<Item = (BlockPos, BlockState)>,
+    {
+        for (position, state) in updates { self.set_block(position, state); }
+    }
     /// Apply a decoded server column. Full updates replace the column; partial updates keep unmasked sections.
     pub fn apply_chunk_data(&mut self, data: ChunkColumnData) -> Result<(), WorldError> {
         if data.unload { self.chunks.remove(&data.position); return Ok(()); }
@@ -265,6 +286,17 @@ mod tests {
         let data = ChunkColumnData { position: ChunkPos::new(4, -2), ground_up: true, unload: true, sections: std::array::from_fn(|_| None), biomes: None };
         world.apply_chunk_data(data).unwrap();
         assert_eq!(world.chunk_count(), 0);
+    }
+    #[test]
+    fn applies_server_block_change_batches() {
+        let mut world = World::new();
+        world.apply_block_change(BlockPos::new(-1, 64, 2), BlockState(5));
+        world.apply_block_changes([
+            (BlockPos::new(-1, 64, 2), BlockState::AIR),
+            (BlockPos::new(3, 70, 4), BlockState(9)),
+        ]);
+        assert_eq!(world.get_block(BlockPos::new(-1, 64, 2)), BlockState::AIR);
+        assert_eq!(world.get_block(BlockPos::new(3, 70, 4)), BlockState(9));
     }
     #[test]
     fn negative_coordinates_use_floor_chunk_math() {

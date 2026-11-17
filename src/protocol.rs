@@ -197,6 +197,11 @@ pub fn read_compressed_frame<R: Read>(reader: &mut R, maximum_uncompressed: usiz
     Ok(decoded)
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MapChunkBulkData {
+    pub sky_light_sent: bool,
+    pub columns: Vec<ChunkColumnData>,
+}
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BlockChange {
     pub position: BlockPos,
@@ -269,6 +274,42 @@ pub fn decode_multi_block_change(payload: &[u8]) -> Result<MultiBlockChange, Pro
     }
     if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in multi block change")); }
     Ok(MultiBlockChange { chunk: ChunkPos::new(chunk_x, chunk_z), records })
+}
+
+/// Decode clientbound S26 (0x26). The packet stores all column headers first,
+/// followed by each complete column data blob in order.
+pub fn decode_map_chunk_bulk(payload: &[u8]) -> Result<MapChunkBulkData, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let sky_raw = cursor.read_u8()?;
+    if sky_raw > 1 { return Err(ProtocolError::InvalidChunkData("invalid bulk skylight flag")); }
+    let sky_light_sent = sky_raw != 0;
+    let count = cursor.read_varint()?;
+    if count < 0 || count > 1024 {
+        return Err(ProtocolError::InvalidChunkData("bulk column count must be between 0 and 1024"));
+    }
+    let mut headers = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        headers.push((cursor.read_i32()?, cursor.read_i32()?, cursor.read_u16()?));
+    }
+    let mut columns = Vec::with_capacity(count as usize);
+    for (x, z, bitmap) in headers {
+        let section_count = bitmap.count_ones() as usize;
+        let bytes_per_section = 8192 + 2048 + if sky_light_sent { 2048 } else { 0 };
+        let data_length = section_count.checked_mul(bytes_per_section)
+            .and_then(|n| n.checked_add(256))
+            .ok_or(ProtocolError::InvalidChunkData("bulk chunk data length overflow"))?;
+        let data = cursor.read_bytes(data_length)?;
+        let mut single = Vec::with_capacity(16 + data_length);
+        single.extend_from_slice(&x.to_be_bytes());
+        single.extend_from_slice(&z.to_be_bytes());
+        single.push(1);
+        single.extend_from_slice(&bitmap.to_be_bytes());
+        write_varint(data_length as i32, &mut single);
+        single.extend_from_slice(data);
+        columns.push(decode_chunk_data_packet(&single, sky_light_sent)?);
+    }
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidChunkData("trailing bytes in map chunk bulk")); }
+    Ok(MapChunkBulkData { sky_light_sent, columns })
 }
 
 /// Decode a protocol-47 Chunk Data packet payload (packet ID 0x21 excluded).
@@ -582,6 +623,51 @@ mod tests {
         write_varint(0, &mut trailing);
         trailing.push(1);
         assert!(matches!(decode_multi_block_change(&trailing), Err(ProtocolError::InvalidBlockUpdate(_))));
+    }
+    fn append_bulk_column(data: &mut Vec<u8>, marker: u16, sky: bool) {
+        let mut blocks = vec![0_u8; 8192];
+        blocks[0..2].copy_from_slice(&marker.to_le_bytes());
+        data.extend_from_slice(&blocks);
+        data.extend(std::iter::repeat(0xA1).take(2048));
+        if sky { data.extend(std::iter::repeat(0xB2).take(2048)); }
+        data.extend(std::iter::repeat(0xC3).take(256));
+    }
+
+    #[test]
+    fn decodes_map_chunk_bulk_headers_and_column_blobs() {
+        let mut packet = vec![1];
+        write_varint(2, &mut packet);
+        packet.extend_from_slice(&(-1_i32).to_be_bytes());
+        packet.extend_from_slice(&2_i32.to_be_bytes());
+        packet.extend_from_slice(&1_u16.to_be_bytes());
+        packet.extend_from_slice(&3_i32.to_be_bytes());
+        packet.extend_from_slice(&(-4_i32).to_be_bytes());
+        packet.extend_from_slice(&2_u16.to_be_bytes());
+        append_bulk_column(&mut packet, 0x1234, true);
+        append_bulk_column(&mut packet, 0x5678, true);
+        let decoded = decode_map_chunk_bulk(&packet).unwrap();
+        assert!(decoded.sky_light_sent);
+        assert_eq!(decoded.columns.len(), 2);
+        assert_eq!(decoded.columns[0].position, ChunkPos::new(-1, 2));
+        assert_eq!(decoded.columns[0].sections[0].as_ref().unwrap().blocks[0], 0x1234);
+        assert_eq!(decoded.columns[1].position, ChunkPos::new(3, -4));
+        assert_eq!(decoded.columns[1].sections[1].as_ref().unwrap().blocks[0], 0x5678);
+        assert_eq!(decoded.columns[1].sections[1].as_ref().unwrap().block_light[0], 0xA1);
+        assert_eq!(decoded.columns[1].sections[1].as_ref().unwrap().sky_light.as_ref().unwrap()[0], 0xB2);
+        assert_eq!(decoded.columns[1].biomes.unwrap()[0], 0xC3);
+    }
+
+    #[test]
+    fn rejects_invalid_bulk_count_and_truncated_column() {
+        let mut too_many = vec![0];
+        write_varint(1025, &mut too_many);
+        assert!(matches!(decode_map_chunk_bulk(&too_many), Err(ProtocolError::InvalidChunkData(_))));
+        let mut truncated = vec![0];
+        write_varint(1, &mut truncated);
+        truncated.extend_from_slice(&0_i32.to_be_bytes());
+        truncated.extend_from_slice(&0_i32.to_be_bytes());
+        truncated.extend_from_slice(&1_u16.to_be_bytes());
+        assert!(matches!(decode_map_chunk_bulk(&truncated), Err(ProtocolError::UnexpectedEof)));
     }
     #[test]
     fn parses_host_ports() {
