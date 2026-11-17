@@ -51,13 +51,13 @@ fn start_console_chat(sender: login::PlayPacketSender) -> Result<(), Box<dyn std
             let mut input = stdin.lock();
             let mut stdout = io::stdout();
             loop {
-                if write!(stdout, "\\n> ").and_then(|_| stdout.flush()).is_err() { break; }
+                if write!(stdout, "\n> ").and_then(|_| stdout.flush()).is_err() { break; }
                 let mut line = String::new();
                 match input.read_line(&mut line) {
                     Ok(0) | Err(_) => break,
                     Ok(_) => {}
                 }
-                while line.ends_with(['\\n', '\\r']) { line.pop(); }
+                while line.ends_with('\n') || line.ends_with('\r') { line.pop(); }
                 if line.is_empty() { continue; }
                 match sender.send_chat_message(&line) {
                     Ok(()) => println!("[YOU] {line}"),
