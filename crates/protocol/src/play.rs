@@ -9,6 +9,7 @@ pub enum PlayPacket {
     TimeUpdate { world_age: i64, time_of_day: i64 },
     SpawnPosition { x: i32, y: i32, z: i32 },
     UpdateHealth { health: f32, food: i32, food_saturation: f32 },
+    Respawn { dimension: i32, difficulty: u8, game_mode: u8, level_type: String },
     PlayerPositionLook { x: f64, y: f64, z: f64, yaw: f32, pitch: f32, flags: u8 },
     ChunkData { x: i32, z: i32, ground_up: bool, primary_bitmap: u16, data: Vec<u8> },
     ChunkDataBulk { sky_light: bool, chunks: Vec<BulkChunkColumn> },
@@ -190,6 +191,12 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
             PlayPacket::SpawnPosition { x, y, z }
         }
         0x06 => PlayPacket::UpdateHealth { health: r.f32()?, food: r.i32()?, food_saturation: r.f32()? },
+        0x07 => PlayPacket::Respawn {
+            dimension: r.i32()?,
+            difficulty: r.u8()?,
+            game_mode: r.u8()?,
+            level_type: r.string()?,
+        },
         0x08 => PlayPacket::PlayerPositionLook {
             x: r.f64()?, y: r.f64()?, z: r.f64()?, yaw: r.f32()?, pitch: r.f32()?, flags: r.u8()?,
         },
@@ -345,6 +352,19 @@ mod tests {
         p.push(0x01);
         assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::PlayerPositionLook {
             x: 1.5, y: 64.0, z: -2.0, yaw: 90.0, pitch: 0.0, flags: 1,
+        });
+    }
+
+    #[test]
+    fn decodes_respawn_dimension_and_world_type() {
+        let mut p = vec![0x07];
+        p.extend_from_slice(&(-1_i32).to_be_bytes());
+        p.push(3); // difficulty
+        p.push(1); // creative
+        encode_varint(6, &mut p);
+        p.extend_from_slice(b"default");
+        assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::Respawn {
+            dimension: -1, difficulty: 3, game_mode: 1, level_type: "default".into(),
         });
     }
 
