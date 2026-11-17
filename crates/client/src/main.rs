@@ -1,7 +1,7 @@
 mod status;
 mod login;
 
-use game::{decode_chunk_column, BlockPos, BlockState, ChunkPos, PlayerMovement, ServerAction, ServerEvent};
+use game::{decode_chunk_column, BlockPos, BlockState, ChunkPos, InventoryItem, PlayerMovement, ServerAction, ServerEvent};
 use protocol::{encode_varint, PlayPacket};
 use std::{sync::mpsc, thread};
 use renderer::RenderConfig;
@@ -193,6 +193,40 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ))
                                 .collect();
                             if event_tx.send(ServerEvent::BlockChanges(changes)).is_err() {
+                                break;
+                            }
+                        }
+                        PlayPacket::SetSlot { window_id, slot, item } => {
+                            let item = item.as_ref().map(|item| InventoryItem {
+                                item_id: item.item_id,
+                                count: item.count,
+                                damage: item.damage,
+                                nbt: item.nbt.clone(),
+                            });
+                            if event_tx.send(ServerEvent::InventorySlot {
+                                window_id: *window_id,
+                                slot: *slot,
+                                item,
+                            }).is_err() {
+                                break;
+                            }
+                        }
+                        PlayPacket::WindowItems { window_id, items } => {
+                            let items = items.iter().map(|item| item.as_ref().map(|item| InventoryItem {
+                                item_id: item.item_id,
+                                count: item.count,
+                                damage: item.damage,
+                                nbt: item.nbt.clone(),
+                            })).collect();
+                            if event_tx.send(ServerEvent::WindowItems {
+                                window_id: *window_id,
+                                items,
+                            }).is_err() {
+                                break;
+                            }
+                        }
+                        PlayPacket::HeldItemChange { slot } => {
+                            if event_tx.send(ServerEvent::HeldItemChange { slot: *slot }).is_err() {
                                 break;
                             }
                         }
