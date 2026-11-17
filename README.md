@@ -23,9 +23,11 @@ Early development — repository scaffold and architecture are being established
 - `crates/renderer` — GPU rendering and resource management.
 - `crates/client` — desktop application and orchestration.
 
-## Current milestone: native GPU window
+## Current milestone: first voxel terrain render
 
-The client can now open a native window with `wgpu` and present frames through a real GPU surface. This first renderer milestone clears the surface to a dark scene color; it does not yet draw voxel geometry or load Minecraft chunks.
+The native `wgpu` renderer now builds and draws a small 9×9 demo terrain from cube faces. It removes hidden faces between adjacent blocks, uploads the resulting vertex buffer to the GPU, and uses a depth buffer. The scene uses a simple isometric projection so the first block geometry is visible without a camera controller.
+
+This is a renderer test scene, not yet Minecraft's terrain generator, textures, chunk format, or multiplayer world.
 
 Run it with:
 
