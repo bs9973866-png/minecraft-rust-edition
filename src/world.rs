@@ -123,7 +123,7 @@ impl World {
             let state = self.get_block(position);
             if !state.is_air() {
                 let mut face = [0_i8; 3];
-                face[axis] = -step[axis];
+                face[axis] = (-step[axis]) as i8;
                 return Some(RayHit { position, state, distance, face: Some(face) });
             }
         }
