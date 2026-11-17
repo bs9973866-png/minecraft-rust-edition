@@ -7,6 +7,7 @@ use minecraft_rust::protocol::{
 };
 use minecraft_rust::math::Vec3;
 use minecraft_rust::simulation::ClientSimulation;
+use minecraft_rust::world::World;
 use minecraft_rust::{PROTOCOL_VERSION, TARGET_VERSION};
 
 fn print_help() {
@@ -84,7 +85,7 @@ fn print_play_event(event: PlayEvent, world: &World) {
             "[WINDOW] transaction={} accepted={}",
             data.action_number, data.accepted
         ),
-        PlayEvent::Entity(entity) => println!("[ENTITY] {entity:?}; tracked={}", simulation.world.entity_count()),
+        PlayEvent::Entity(entity) => println!("[ENTITY] {entity:?}; tracked={}", world.entity_count()),
         PlayEvent::KeepAliveResponded(_) => {}
         PlayEvent::Unknown { packet_id, payload } => println!(
             "[PACKET] unhandled Play packet 0x{packet_id:02X} ({} payload bytes)",
