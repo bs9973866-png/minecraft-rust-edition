@@ -45,13 +45,13 @@ The game crate now includes a nine-slot hotbar data model with selection, wrapar
 
 The launcher is intentionally minimal: enter an offline nickname and press **Play**. It saves the nickname locally and starts the game executable with `--window --username <nickname>`. No Microsoft or Ely.by login is involved.
 
-Build both Windows executables from the repository root:
+To build a portable Windows folder automatically, run `build-launcher.ps1` from the repository root:
 
 ```powershell
-cargo build --release -p rust-edition-client -p rust-edition-launcher
+.\\build-launcher.ps1
 ```
 
-Then keep `target/release/rust-edition-launcher.exe` and `target/release/rust-edition.exe` in the same folder. Start `rust-edition-launcher.exe`.
+The script builds both release executables and copies them into `dist/RustEdition`. Start `rust-edition-launcher.exe` there; keep `rust-edition.exe` beside it. You can also build manually with `cargo build --release -p rust-edition-client -p rust-edition-launcher`.
 
 The launcher stores its nickname in `%APPDATA%/RustEdition/launcher.json`. Offline names must be 3–16 characters and contain only Latin letters, numbers, and underscores.
 
@@ -61,7 +61,7 @@ You can still run the game directly during development:
 cargo run -p rust-edition-client -- --window
 ```
 
-The offline nickname is currently passed to the client process and logged at startup. It is not yet a multiplayer identity: server login and multiplayer are not implemented.
+The offline nickname is passed to the client and shown in the game window title. It is not yet a multiplayer identity: server login and multiplayer are not implemented.
 
 The window uses the platform's available graphics backend. A compatible GPU/driver and desktop session are required.
 
