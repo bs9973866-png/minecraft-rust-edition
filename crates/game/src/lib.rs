@@ -114,6 +114,8 @@ pub enum ServerAction {
         face: u8,
         cursor: [u8; 3],
     },
+    /// Select one of the nine server-side hotbar slots (0..=8).
+    SelectHotbarSlot { slot: u8 },
 }
 
 /// Decode the raw S21PacketChunkData data array for protocol 47.
