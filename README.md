@@ -6,7 +6,7 @@ A clean-room Rust reimplementation project targeting compatibility with Minecraf
 
 ## Project status
 
-Early playable prototype — the native window, deterministic procedural terrain, basic trees, first-person movement, basic collision, hotbar HUD, server status ping, sparse chunk storage, and per-chunk GPU meshes are implemented. This is not yet a complete playable Minecraft client and cannot join multiplayer servers.
+Early multiplayer-capable prototype — the native window, procedural local terrain, first-person movement, collision, hotbar HUD, status ping, offline-mode Login, and a persistent protocol-47 Play connection are implemented. The Play connection receives and reports selected server packets and answers Keep Alive and position corrections, but it is not yet connected to the renderer or a complete playable multiplayer world.
 
 ## Goals
 
@@ -61,13 +61,13 @@ You can still run the game directly during development:
 cargo run -p rust-edition-client -- --window
 ```
 
-The offline nickname is passed to the client and shown in the game window title. It is not yet a multiplayer identity: server login and multiplayer are not implemented.
+The offline nickname is passed to the client and shown in the game window title. The same nickname can be used for the offline-mode protocol login command documented below.
 
 The window uses the platform's available graphics backend. A compatible GPU/driver and desktop session are required.
 
 ## Previous milestone: server status ping
 
-The client now has a `--status` command that performs the Minecraft Handshake (protocol 47, next state Status), sends Status Request, reads the framed Status Response, and parses its JSON. This is a first real network-protocol milestone; it does **not** yet implement player login or gameplay.
+The client has a `--status` command that performs the Minecraft Handshake (protocol 47, next state Status), sends Status Request, reads the framed Status Response, and parses its JSON.
 
 Example:
 
@@ -92,15 +92,21 @@ cargo test --workspace
 
 ## Compatibility note
 
-This project is an early prototype. Full gameplay, authentication, real server chunk decoding, rendering parity, and broad server compatibility remain unimplemented and must be verified against real 1.8.9 servers.
+This project is an early prototype. Full gameplay, online-mode authentication, real server chunk-to-block decoding, multiplayer world rendering, client movement/input synchronization, inventory interaction, entities, and broad server compatibility remain unimplemented and must be verified against real 1.8.9 servers.
 
 
 ### Offline-mode server login prototype
 
-The client also has a protocol-47 offline-mode login handshake test:
+Connect to an offline-mode 1.8.9 server and stay in Play state:
+
+```powershell
+cargo run -p rust-edition-client -- --play localhost:25565 --username Player
+```
+
+The connection logs selected server events and chunk packet sizes to the terminal. Press `Ctrl+C` to disconnect. For a login-only handshake check, use:
 
 ```powershell
 cargo run -p rust-edition-client -- --login localhost:25565 --username Player
 ```
 
-This only works with servers configured for offline-mode. It verifies the Login Start / Login Success exchange; it does **not** yet enter the world or implement play-state packets. Online-mode encryption and authenticated Microsoft login are not implemented. Login packet compression (Set Compression + zlib framing) is supported.
+Both commands work only with servers configured for offline-mode. Online-mode encryption and authenticated Microsoft login are not implemented. Login/play packet compression (Set Compression + zlib framing) is supported.
