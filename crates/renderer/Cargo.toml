@@ -14,3 +14,4 @@ winit = "0.29.15"
 pollster = "0.3"
 bytemuck = { version = "1.15", features = ["derive"] }
 glam = "0.27"
+game = { package = "rust-edition-game", path = "../game" }
