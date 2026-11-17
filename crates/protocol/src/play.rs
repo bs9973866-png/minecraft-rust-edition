@@ -266,8 +266,8 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
             for _ in 0..count { items.push(r.item_stack()?); }
             PlayPacket::WindowItems { window_id, items }
         }
-        0x3f => {
-            let slot = r.i8()?;
+        0x09 => {
+            let slot = r.i8()?
             if !(0..=8).contains(&slot) { return Err("invalid held hotbar slot".into()); }
             PlayPacket::HeldItemChange { slot: slot as u8 }
         }
@@ -448,8 +448,11 @@ mod tests {
             window_id: 0,
             items: vec![None, Some(ItemStack { item_id: 5, count: 3, damage: 2, nbt: vec![0] })],
         });
-        assert_eq!(decode_play_packet(&[0x3f, 8]).unwrap(), PlayPacket::HeldItemChange { slot: 8 });
-        assert!(decode_play_packet(&[0x3f, 9]).is_err());
+        // S09PacketHeldItemChange is 0x09 in Minecraft 1.8.9 (protocol 47).
+        assert_eq!(decode_play_packet(&[0x09, 8]).unwrap(), PlayPacket::HeldItemChange { slot: 8 });
+        assert!(decode_play_packet(&[0x09, 9]).is_err());
+        // 0x3f is not the 1.8.9 held-slot packet.
+        assert_eq!(decode_play_packet(&[0x3f, 8]).unwrap(), PlayPacket::Unknown { id: 0x3f, payload: vec![8] });
     }
 
     #[test]
