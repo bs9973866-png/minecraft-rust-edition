@@ -1,0 +1,20 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/protocol",
+    "crates/game",
+    "crates/renderer",
+    "crates/client",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+all = "warn"
+pedantic = "warn"
