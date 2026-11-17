@@ -1,5 +1,5 @@
 //! Window and GPU rendering backend for Rust Edition.
-//! Draws a generated voxel test world with a movable first-person-style camera.
+//! Draws a seed-generated voxel landscape with a movable first-person-style camera.
 
 use std::{collections::{HashMap, HashSet}, sync::Arc, time::Instant};
 use game::{BlockPos, ChunkPos, Hotbar, PlayerPhysics, World, CHUNK_WIDTH};
