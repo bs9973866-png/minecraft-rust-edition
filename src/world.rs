@@ -236,9 +236,9 @@ mod tests {
         let mut biomes = [0_u8; 256];
         biomes[0] = 4;
         let mut world = World::new();
-        world.apply_chunk_data(ChunkColumnData { position: ChunkPos::new(-1, 2), ground_up: true, unload: false, sections, biomes: Some(biomes) }).unwrap();
+        world.apply_chunk_data(ChunkColumnData { position: ChunkPos::new(-1, 0), ground_up: true, unload: false, sections, biomes: Some(biomes) }).unwrap();
         assert_eq!(world.get_block(BlockPos::new(-13, 1, 2)), BlockState(0x1234));
-        let chunk = world.get_chunk(ChunkPos::new(-1, 2)).unwrap();
+        let chunk = world.get_chunk(ChunkPos::new(-1, 0)).unwrap();
         assert_eq!(chunk.get_block_light(0, 0, 0), 5);
         assert_eq!(chunk.get_block_light(1, 0, 0), 10);
         assert_eq!(chunk.get_sky_light(0, 0, 0), 12);
