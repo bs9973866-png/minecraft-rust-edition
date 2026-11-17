@@ -92,6 +92,7 @@ impl World {
 
     pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> { self.chunks.get(&pos) }
     pub fn chunk_count(&self) -> usize { self.chunks.len() }
+    pub fn chunk_positions(&self) -> impl Iterator<Item = ChunkPos> + '_ { self.chunks.keys().copied() }
     pub fn contains(&self, pos: BlockPos) -> bool { self.block(pos).0 != 0 }
 
     pub fn block(&self, pos: BlockPos) -> BlockState {
