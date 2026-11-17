@@ -618,6 +618,16 @@ fn run_window_internal(
                             gpu.world.apply_chunk_column(&column);
                             gpu.rebuild_chunk_column_and_neighbors(chunk);
                         }
+                        Ok(ServerEvent::BlockChanges(changes)) => {
+                            let mut touched = HashSet::new();
+                            for (position, state) in changes {
+                                let _ = gpu.world.set_block(position, state);
+                                touched.insert(ChunkPos::from_block(position.x, position.z));
+                            }
+                            for chunk in touched {
+                                gpu.rebuild_chunk_column_and_neighbors(chunk);
+                            }
+                        }
                         Ok(ServerEvent::Teleport(position)) => {
                             gpu.camera.teleport(position);
                             gpu.update_camera();
