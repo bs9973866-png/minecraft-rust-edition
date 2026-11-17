@@ -20,3 +20,18 @@ jobs:
         run: cargo check --workspace
       - name: Run tests
         run: cargo test --workspace
+
+  windows-portable:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Build portable launcher
+        shell: pwsh
+        run: .\\build-launcher.ps1
+      - name: Upload portable folder
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-edition-windows-portable
+          path: dist/RustEdition/
+          if-no-files-found: error
