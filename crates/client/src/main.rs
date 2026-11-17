@@ -7,11 +7,17 @@ use renderer::RenderConfig;
 fn print_usage() {
     println!("Usage:");
     println!("  rust-edition                 Show client foundation info");
+    println!("  rust-edition --window        Open the GPU-rendered client window");
     println!("  rust-edition --status HOST[:PORT]  Query a Minecraft server status");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = std::env::args().collect();
+    if args.get(1).map(String::as_str) == Some("--window") {
+        renderer::run_window().map_err(|error| format!("renderer: {error}"))?;
+        return Ok(());
+    }
+
     if args.get(1).map(String::as_str) == Some("--status") {
         let target = args.get(2).ok_or("missing server address; example: play.example.net:25565")?;
         let (host, port) = match target.rsplit_once(':') {
