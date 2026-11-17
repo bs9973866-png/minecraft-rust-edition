@@ -23,7 +23,19 @@ Early development — repository scaffold and architecture are being established
 - `crates/renderer` — GPU rendering and resource management.
 - `crates/client` — desktop application and orchestration.
 
-## Current milestone: server status ping
+## Current milestone: native GPU window
+
+The client can now open a native window with `wgpu` and present frames through a real GPU surface. This first renderer milestone clears the surface to a dark scene color; it does not yet draw voxel geometry or load Minecraft chunks.
+
+Run it with:
+
+```sh
+cargo run -p rust-edition-client -- --window
+```
+
+The window uses the platform's available graphics backend. A compatible GPU/driver and desktop session are required.
+
+## Previous milestone: server status ping
 
 The client now has a `--status` command that performs the Minecraft Handshake (protocol 47, next state Status), sends Status Request, reads the framed Status Response, and parses its JSON. This is a first real network-protocol milestone; it does **not** yet implement player login or gameplay.
 
