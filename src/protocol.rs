@@ -1434,7 +1434,8 @@ mod tests {
     fn movement_digging_and_hotbar_encoders_match_protocol_47_layout() {
         let position = BlockPos::new(-12345, 64, 54321);
         let movement = PlayerMove { x: 12.5, y: 64.0, z: -3.25, yaw: 90.0, pitch: -15.0 };
-        let mut full = PacketCursor::new(&read_frame(&mut Cursor::new(encode_player_position_look(movement, true)), 64).unwrap());
+        let full_frame = read_frame(&mut Cursor::new(encode_player_position_look(movement, true)), 64).unwrap();
+        let mut full = PacketCursor::new(&full_frame);
         assert_eq!(full.read_varint().unwrap(), 0x06);
         assert_eq!(full.read_f64().unwrap(), 12.5);
         assert_eq!(full.read_f64().unwrap(), 64.0);
@@ -1443,14 +1444,16 @@ mod tests {
         assert_eq!(full.read_f32().unwrap(), -15.0);
         assert_eq!(full.read_u8().unwrap(), 1);
 
-        let mut pos = PacketCursor::new(&read_frame(&mut Cursor::new(encode_player_position(1.0, 2.0, 3.0, false)), 64).unwrap());
+        let pos_frame = read_frame(&mut Cursor::new(encode_player_position(1.0, 2.0, 3.0, false)), 64).unwrap();
+        let mut pos = PacketCursor::new(&pos_frame);
         assert_eq!(pos.read_varint().unwrap(), 0x04);
         assert_eq!(pos.read_f64().unwrap(), 1.0);
         assert_eq!(pos.read_f64().unwrap(), 2.0);
         assert_eq!(pos.read_f64().unwrap(), 3.0);
         assert_eq!(pos.read_u8().unwrap(), 0);
 
-        let mut look = PacketCursor::new(&read_frame(&mut Cursor::new(encode_player_look(45.0, 10.0, true)), 64).unwrap());
+        let look_frame = read_frame(&mut Cursor::new(encode_player_look(45.0, 10.0, true)), 64).unwrap();
+        let mut look = PacketCursor::new(&look_frame);
         assert_eq!(look.read_varint().unwrap(), 0x05);
         assert_eq!(look.read_f32().unwrap(), 45.0);
         assert_eq!(look.read_f32().unwrap(), 10.0);
