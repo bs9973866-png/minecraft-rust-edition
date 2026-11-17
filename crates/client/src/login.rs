@@ -47,6 +47,27 @@ fn encode_server_action(action: ServerAction) -> Result<Vec<u8>, String> {
             packet.push(face);
             Ok(packet)
         }
+        ServerAction::UseBlock { position, face, cursor } => {
+            if !(0..=255).contains(&position.y) {
+                return Err("block Y coordinate is outside the 1.8.9 build height".into());
+            }
+            if face > 5 {
+                return Err("invalid block face for protocol-47 placement packet".into());
+            }
+            if cursor.iter().any(|value| *value > 15) {
+                return Err("block hit cursor coordinates must be in 0..=15".into());
+            }
+            let packed = ((i64::from(position.x) & 0x03ff_ffff) << 38)
+                | ((i64::from(position.y) & 0x0fff) << 26)
+                | (i64::from(position.z) & 0x03ff_ffff);
+            // C08 Player Block Placement. Item ID -1 means an empty hand.
+            let mut packet = vec![0x08];
+            packet.extend_from_slice(&packed.to_be_bytes());
+            packet.push(face);
+            packet.extend_from_slice(&(-1_i16).to_be_bytes());
+            packet.extend_from_slice(&cursor);
+            Ok(packet)
+        }
     }
 }
 
@@ -401,6 +422,42 @@ mod tests {
         expected.extend_from_slice(&packed.to_be_bytes());
         expected.push(4);
         assert_eq!(packet, expected);
+    }
+
+    #[test]
+    fn encodes_protocol_47_empty_hand_block_interaction() {
+        let packet = encode_server_action(ServerAction::UseBlock {
+            position: game::BlockPos::new(-12, 70, -31),
+            face: 1,
+            cursor: [8, 4, 15],
+        }).unwrap();
+        let packed = ((-12_i64 & 0x03ff_ffff) << 38)
+            | ((70_i64 & 0x0fff) << 26)
+            | (-31_i64 & 0x03ff_ffff);
+        let mut expected = vec![0x08];
+        expected.extend_from_slice(&packed.to_be_bytes());
+        expected.push(1);
+        expected.extend_from_slice(&(-1_i16).to_be_bytes());
+        expected.extend_from_slice(&[8, 4, 15]);
+        assert_eq!(packet, expected);
+    }
+
+    #[test]
+    fn rejects_invalid_block_interaction_face_cursor_and_height() {
+        let invalid = [
+            ServerAction::UseBlock {
+                position: game::BlockPos::new(0, 64, 0), face: 6, cursor: [8, 8, 8],
+            },
+            ServerAction::UseBlock {
+                position: game::BlockPos::new(0, 256, 0), face: 1, cursor: [8, 8, 8],
+            },
+            ServerAction::UseBlock {
+                position: game::BlockPos::new(0, 64, 0), face: 1, cursor: [8, 16, 8],
+            },
+        ];
+        for action in invalid {
+            assert!(encode_server_action(action).is_err());
+        }
     }
 
     #[test]
