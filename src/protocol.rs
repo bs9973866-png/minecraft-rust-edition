@@ -6,12 +6,16 @@ use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
+use flate2::read::ZlibDecoder;
+use flate2::write::ZlibEncoder;
+use flate2::Compression;
+
 pub const PROTOCOL_VERSION: i32 = 47;
 pub const DEFAULT_MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
 
 #[derive(Debug)]
 pub enum ProtocolError {
-    Io(io::Error), UnexpectedEof, VarIntTooLong, InvalidLength(i32),
+    Io(io::Error), Compression(String), UnexpectedEof, VarIntTooLong, InvalidLength(i32),
     FrameTooLarge { length: usize, maximum: usize }, InvalidUtf8,
     StringTooLong { length: usize, maximum: usize },
     UnexpectedPacket { expected: i32, actual: i32 }, InvalidAddress(String),
@@ -21,6 +25,7 @@ impl fmt::Display for ProtocolError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(f, "network I/O error: {error}"),
+            Self::Compression(error) => write!(f, "zlib compression error: {error}"),
             Self::UnexpectedEof => write!(f, "unexpected end of packet"),
             Self::VarIntTooLong => write!(f, "VarInt is longer than five bytes"),
             Self::InvalidLength(length) => write!(f, "invalid packet length: {length}"),
@@ -134,6 +139,57 @@ pub fn encode_packet(packet_id: i32, payload: &[u8]) -> Vec<u8> {
     write_varint(body.len() as i32, &mut frame);
     frame.extend_from_slice(&body);
     frame
+}
+
+/// Encode a packet using the compression framing enabled by Set Compression.
+pub fn encode_compressed_packet(packet_id: i32, payload: &[u8], threshold: usize) -> Result<Vec<u8>, ProtocolError> {
+    let mut packet_data = Vec::with_capacity(5 + payload.len());
+    write_varint(packet_id, &mut packet_data);
+    packet_data.extend_from_slice(payload);
+
+    let mut body = Vec::new();
+    if packet_data.len() >= threshold {
+        write_varint(packet_data.len() as i32, &mut body);
+        let mut encoder = ZlibEncoder::new(Vec::new(), Compression::default());
+        encoder.write_all(&packet_data).map_err(|e| ProtocolError::Compression(e.to_string()))?;
+        let compressed = encoder.finish().map_err(|e| ProtocolError::Compression(e.to_string()))?;
+        body.extend_from_slice(&compressed);
+    } else {
+        write_varint(0, &mut body);
+        body.extend_from_slice(&packet_data);
+    }
+
+    let mut frame = Vec::with_capacity(5 + body.len());
+    write_varint(body.len() as i32, &mut frame);
+    frame.extend_from_slice(&body);
+    Ok(frame)
+}
+
+/// Read one packet after compression has been negotiated. Returns packet ID plus payload.
+pub fn read_compressed_frame<R: Read>(reader: &mut R, maximum_uncompressed: usize) -> Result<Vec<u8>, ProtocolError> {
+    let frame = read_frame(reader, maximum_uncompressed.saturating_add(5))?;
+    let mut cursor = PacketCursor::new(&frame);
+    let declared_length = cursor.read_varint()?;
+    if declared_length < 0 { return Err(ProtocolError::InvalidLength(declared_length)); }
+    let content = cursor.read_bytes(cursor.remaining())?;
+    if declared_length == 0 {
+        if content.len() > maximum_uncompressed {
+            return Err(ProtocolError::FrameTooLarge { length: content.len(), maximum: maximum_uncompressed });
+        }
+        return Ok(content.to_vec());
+    }
+    let expected = declared_length as usize;
+    if expected > maximum_uncompressed {
+        return Err(ProtocolError::FrameTooLarge { length: expected, maximum: maximum_uncompressed });
+    }
+    let decoder = ZlibDecoder::new(content);
+    let mut decoded = Vec::with_capacity(expected);
+    decoder.take(maximum_uncompressed as u64 + 1).read_to_end(&mut decoded)
+        .map_err(|e| ProtocolError::Compression(e.to_string()))?;
+    if decoded.len() != expected {
+        return Err(ProtocolError::Compression(format!("declared uncompressed length {expected}, got {}", decoded.len())));
+    }
+    Ok(decoded)
 }
 
 /// Read one complete Minecraft packet frame from a stream.
@@ -253,6 +309,17 @@ mod tests {
         assert!(matches!(PacketCursor::new(&encoded).read_string(2), Err(ProtocolError::StringTooLong { .. })));
         let bad = vec![1, 0xff];
         assert!(matches!(PacketCursor::new(&bad).read_string(4), Err(ProtocolError::InvalidUtf8)));
+    }
+    #[test]
+    fn compressed_and_uncompressed_frames_round_trip() {
+        let payload = vec![b'R'; 1024];
+        for threshold in [0, 1, 4096] {
+            let frame = encode_compressed_packet(0x21, &payload, threshold).unwrap();
+            let decoded = read_compressed_frame(&mut Cursor::new(frame), 4096).unwrap();
+            let mut cursor = PacketCursor::new(&decoded);
+            assert_eq!(cursor.read_varint().unwrap(), 0x21);
+            assert_eq!(cursor.read_exact_bytes(1024).unwrap(), payload);
+        }
     }
     #[test]
     fn parses_host_ports() {
