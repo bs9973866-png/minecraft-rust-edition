@@ -227,7 +227,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .recv()
             .map_err(|_| "server connection ended before the game window could open")?;
         println!("Opening server world window for {username} at {host}:{port}.");
-        println!("Server chunks and block updates are rendered; WASD movement and left-click mining are sent to the server.");
+        println!("Server chunks and block updates are rendered; WASD movement, hotbar selection, mining, and empty-hand block interactions are sent to the server.");
         let render_result =
             renderer::run_window_with_server_events(&username, event_rx, movement_tx, action_tx);
         let _ = packet_sender.shutdown();
