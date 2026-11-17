@@ -147,6 +147,12 @@ pub struct World {
 impl World {
     pub fn new() -> Self { Self::default() }
     pub fn chunk_count(&self) -> usize { self.chunks.len() }
+
+    /// Clear all loaded chunks and tracked entities (for world/dimension changes).
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+        self.entities.clear();
+    }
     pub fn get_chunk(&self, position: ChunkPos) -> Option<&Chunk> { self.chunks.get(&position) }
     pub fn get_block(&self, position: BlockPos) -> BlockState {
         if !(0..WORLD_HEIGHT).contains(&position.y) { return BlockState::AIR; }

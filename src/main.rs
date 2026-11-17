@@ -5,7 +5,8 @@ use std::time::Duration;
 use minecraft_rust::protocol::{
     login_offline, parse_host_port, query_status_host, PlayEvent, ProtocolError,
 };
-use minecraft_rust::world::World;
+use minecraft_rust::math::Vec3;
+use minecraft_rust::simulation::ClientSimulation;
 use minecraft_rust::{PROTOCOL_VERSION, TARGET_VERSION};
 
 fn print_help() {
@@ -83,7 +84,7 @@ fn print_play_event(event: PlayEvent, world: &World) {
             "[WINDOW] transaction={} accepted={}",
             data.action_number, data.accepted
         ),
-        PlayEvent::Entity(entity) => println!("[ENTITY] {entity:?}; tracked={}", world.entity_count()),
+        PlayEvent::Entity(entity) => println!("[ENTITY] {entity:?}; tracked={}", simulation.world.entity_count()),
         PlayEvent::KeepAliveResponded(_) => {}
         PlayEvent::Unknown { packet_id, payload } => println!(
             "[PACKET] unhandled Play packet 0x{packet_id:02X} ({} payload bytes)",
@@ -103,10 +104,19 @@ fn run_offline_connection(address: &str, username: &str) -> Result<(), String> {
     );
 
     let mut play = login.into_play();
-    let mut world = World::new();
+    let mut simulation = ClientSimulation::new(Vec3::ZERO);
     loop {
-        match play.read_world_event(&mut world) {
-            Ok(event) => print_play_event(event, &world),
+        match play.read_event() {
+            Ok(event) => {
+                if let Some(acknowledgement) = simulation
+                    .apply_play_event(&event)
+                    .map_err(|error| error.to_string())?
+                {
+                    play.send_player_movement(acknowledgement, simulation.player.on_ground)
+                        .map_err(|error| error.to_string())?;
+                }
+                print_play_event(event, &simulation.world);
+            }
             Err(ProtocolError::UnexpectedEof) => {
                 println!("[DISCONNECT] server closed the connection");
                 return Ok(());

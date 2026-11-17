@@ -9,6 +9,7 @@ pub mod math;
 pub mod nbt;
 pub mod physics;
 pub mod protocol;
+pub mod simulation;
 pub mod world;
 
 pub const TARGET_VERSION: &str = "1.8.9";

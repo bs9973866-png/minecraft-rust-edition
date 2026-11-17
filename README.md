@@ -27,6 +27,7 @@ An independent, clean-room Rust implementation project targeting the **Minecraft
 - Sparse 16×256×16 chunk/world storage with correct negative-coordinate chunk math.
 - Vector/AABB primitives and 3D voxel DDA raycasting.
 - Initial player physics: normalized directional input, ground/air acceleration, gravity, jump impulse, friction and axis-clipped collisions against a full-cube block subset.
+- ClientSimulation joins player physics, world/chunk state, entity interpolation and incoming Play events; S08 relative position/rotation flags are applied and answered with the C06 movement acknowledgement.
 - Unit tests for protocol framing, packet parsing, negative coordinates, sparse chunks, and raycasting.
 
 ## Build

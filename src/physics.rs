@@ -4,6 +4,7 @@
 //! block shape, fluid, ladder, potion or movement mode.
 
 use crate::math::{Aabb, Vec3};
+use crate::protocol::{PlayerMove, PlayerPositionLook};
 use crate::world::{BlockPos, BlockState, World};
 
 const DEFAULT_GRAVITY: f64 = 0.08;
@@ -58,6 +59,30 @@ impl PlayerPhysics {
             height: 1.8,
             walk_speed: 0.1,
             jump_velocity: 0.42,
+        }
+    }
+
+    /// Apply S08 server correction, respecting the relative-coordinate/rotation flags.
+    /// Returns the absolute transform that must be acknowledged with C06.
+    pub fn apply_server_position_look(&mut self, update: PlayerPositionLook) -> PlayerMove {
+        let relative_x = update.flags & 0x01 != 0;
+        let relative_y = update.flags & 0x02 != 0;
+        let relative_z = update.flags & 0x04 != 0;
+        let relative_yaw = update.flags & 0x08 != 0;
+        let relative_pitch = update.flags & 0x10 != 0;
+
+        self.position.x = if relative_x { self.position.x + update.x } else { update.x };
+        self.position.y = if relative_y { self.position.y + update.y } else { update.y };
+        self.position.z = if relative_z { self.position.z + update.z } else { update.z };
+        self.yaw = if relative_yaw { self.yaw + update.yaw } else { update.yaw };
+        self.pitch = if relative_pitch { self.pitch + update.pitch } else { update.pitch };
+
+        PlayerMove {
+            x: self.position.x,
+            y: self.position.y,
+            z: self.position.z,
+            yaw: self.yaw,
+            pitch: self.pitch,
         }
     }
 
