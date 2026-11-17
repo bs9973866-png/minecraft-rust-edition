@@ -119,11 +119,7 @@ impl PlayPacketSender {
 
     /// Send a protocol-47 chat message (including slash commands).
     pub fn send_chat_message(&self, message: &str) -> Result<(), String> {
-        if message.chars().count() > 100 {
-            return Err("Minecraft 1.8.9 chat messages are limited to 100 characters".into());
-        }
-        let mut packet = vec![0x01];
-        write_string(message, &mut packet)?;
+        let packet = encode_chat_message(message)?;
         self.send(&packet)
     }
 
@@ -150,6 +146,15 @@ fn write_string(value: &str, out: &mut Vec<u8>) -> Result<(), String> {
     encode_varint(value.len() as i32, out);
     out.extend_from_slice(value.as_bytes());
     Ok(())
+}
+
+fn encode_chat_message(message: &str) -> Result<Vec<u8>, String> {
+    if message.chars().count() > 100 {
+        return Err("Minecraft 1.8.9 chat messages are limited to 100 characters".into());
+    }
+    let mut packet = vec![0x01];
+    write_string(message, &mut packet)?;
+    Ok(packet)
 }
 
 fn read_string(bytes: &[u8], offset: &mut usize) -> Result<String, String> {
@@ -494,6 +499,13 @@ mod tests {
             encode_server_action(ServerAction::SelectHotbarSlot { slot: 7 }).unwrap(),
             vec![0x09, 0x00, 0x07],
         );
+    }
+
+    #[test]
+    fn encodes_chat_message_as_protocol_47_packet() {
+        assert_eq!(encode_chat_message("hello").unwrap(), vec![0x01, 5, b'h', b'e', b'l', b'l', b'o']);
+        assert_eq!(encode_chat_message("/spawn").unwrap()[0], 0x01);
+        assert!(encode_chat_message(&"x".repeat(101)).is_err());
     }
 
     #[test]
