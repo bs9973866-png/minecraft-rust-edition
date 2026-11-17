@@ -10,6 +10,7 @@ An independent, clean-room Rust implementation project targeting the **Minecraft
 - Handshake and status-request packet construction.
 - TCP server status query (`--status HOST:PORT`).
 - Protocol-47 chunk-column decoder for legacy block states, section masks, block light, optional skylight, and biome arrays.
+- Clientbound single-block (`0x23`) and multi-block (`0x22`) update decoders with signed world coordinates and chunk-relative packed records.
 - World application for full and partial chunk updates, with packed light-nibble access.
 - Bounded packet cursor with primitive and UTF-8 string readers.
 - Sparse 16×256×16 chunk/world storage with correct negative-coordinate chunk math.

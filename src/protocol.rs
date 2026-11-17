@@ -10,7 +10,7 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 
-use crate::world::{ChunkColumnData, ChunkPos, ChunkSectionData};
+use crate::world::{BlockPos, BlockState, ChunkColumnData, ChunkPos, ChunkSectionData};
 
 pub const PROTOCOL_VERSION: i32 = 47;
 pub const DEFAULT_MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
@@ -20,7 +20,7 @@ pub enum ProtocolError {
     Io(io::Error), Compression(String), UnexpectedEof, VarIntTooLong, InvalidLength(i32),
     FrameTooLarge { length: usize, maximum: usize }, InvalidUtf8,
     StringTooLong { length: usize, maximum: usize },
-    InvalidChunkData(&'static str),
+    InvalidChunkData(&'static str), InvalidBlockUpdate(&'static str),
     UnexpectedPacket { expected: i32, actual: i32 }, InvalidAddress(String),
 }
 
@@ -35,6 +35,7 @@ impl fmt::Display for ProtocolError {
             Self::FrameTooLarge { length, maximum } => write!(f, "packet frame is too large ({length} bytes; maximum {maximum})"),
             Self::InvalidUtf8 => write!(f, "packet string is not valid UTF-8"),
             Self::InvalidChunkData(reason) => write!(f, "invalid chunk data: {reason}"),
+            Self::InvalidBlockUpdate(reason) => write!(f, "invalid block update: {reason}"),
             Self::StringTooLong { length, maximum } => write!(f, "packet string is too long ({length} bytes; maximum {maximum})"),
             Self::UnexpectedPacket { expected, actual } => write!(f, "unexpected packet id {actual}; expected {expected}"),
             Self::InvalidAddress(address) => write!(f, "invalid server address: {address}"),
@@ -194,6 +195,80 @@ pub fn read_compressed_frame<R: Read>(reader: &mut R, maximum_uncompressed: usiz
         return Err(ProtocolError::Compression(format!("declared uncompressed length {expected}, got {}", decoded.len())));
     }
     Ok(decoded)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BlockChange {
+    pub position: BlockPos,
+    pub state: BlockState,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MultiBlockChangeRecord {
+    pub position: BlockPos,
+    pub state: BlockState,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MultiBlockChange {
+    pub chunk: ChunkPos,
+    pub records: Vec<MultiBlockChangeRecord>,
+}
+
+fn sign_extend(value: u64, bits: u32) -> i32 {
+    let shift = 64 - bits;
+    ((value << shift) as i64 >> shift) as i32
+}
+
+fn decode_packed_position(value: u64) -> BlockPos {
+    let x = sign_extend((value >> 38) & 0x03ff_ffff, 26);
+    let y = sign_extend((value >> 26) & 0x0fff, 12);
+    let z = sign_extend(value & 0x03ff_ffff, 26);
+    BlockPos::new(x, y, z)
+}
+
+fn read_block_state(cursor: &mut PacketCursor<'_>) -> Result<BlockState, ProtocolError> {
+    let state = cursor.read_varint()?;
+    if !(0..=u16::MAX as i32).contains(&state) {
+        return Err(ProtocolError::InvalidBlockUpdate("block state is outside the legacy 16-bit range"));
+    }
+    Ok(BlockState(state as u16))
+}
+
+/// Decode clientbound S23 (0x23): one block position and its new global block-state ID.
+pub fn decode_block_change(payload: &[u8]) -> Result<BlockChange, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let packed_position = cursor.read_i64()? as u64;
+    let state = read_block_state(&mut cursor)?;
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in single block change")); }
+    Ok(BlockChange { position: decode_packed_position(packed_position), state })
+}
+
+/// Decode clientbound S22 (0x22): chunk coordinates and short-packed block changes.
+pub fn decode_multi_block_change(payload: &[u8]) -> Result<MultiBlockChange, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let chunk_x = cursor.read_i32()?;
+    let chunk_z = cursor.read_i32()?;
+    let count = cursor.read_varint()?;
+    if count < 0 || count > 4096 {
+        return Err(ProtocolError::InvalidBlockUpdate("record count must be between 0 and 4096"));
+    }
+    let base_x = chunk_x.checked_mul(16).ok_or(ProtocolError::InvalidBlockUpdate("chunk X coordinate overflow"))?;
+    let base_z = chunk_z.checked_mul(16).ok_or(ProtocolError::InvalidBlockUpdate("chunk Z coordinate overflow"))?;
+    let mut records = Vec::with_capacity(count as usize);
+    for _ in 0..count {
+        let packed = cursor.read_u16()?;
+        let local_x = ((packed >> 12) & 0x0f) as i32;
+        let local_z = ((packed >> 8) & 0x0f) as i32;
+        let y = (packed & 0xff) as i32;
+        let state = read_block_state(&mut cursor)?;
+        records.push(MultiBlockChangeRecord {
+            position: BlockPos::new(base_x + local_x, y, base_z + local_z),
+            state,
+        });
+    }
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in multi block change")); }
+    Ok(MultiBlockChange { chunk: ChunkPos::new(chunk_x, chunk_z), records })
 }
 
 /// Decode a protocol-47 Chunk Data packet payload (packet ID 0x21 excluded).
@@ -458,6 +533,55 @@ mod tests {
         let parsed = decode_chunk_data_packet(&packet, true).unwrap();
         assert!(parsed.unload);
         assert_eq!(parsed.position, ChunkPos::new(4, -2));
+    }
+    fn encode_position(x: i32, y: i32, z: i32) -> i64 {
+        (((x as i64 & 0x03ff_ffff) << 38) | ((y as i64 & 0x0fff) << 26) | (z as i64 & 0x03ff_ffff)) as i64
+    }
+
+    #[test]
+    fn decodes_single_block_change_with_negative_coordinates() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&encode_position(-12345, 64, -54321).to_be_bytes());
+        write_varint(0x123, &mut payload);
+        let change = decode_block_change(&payload).unwrap();
+        assert_eq!(change.position, BlockPos::new(-12345, 64, -54321));
+        assert_eq!(change.state, BlockState(0x123));
+    }
+
+    #[test]
+    fn decodes_multi_block_change_packed_records() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&(-1_i32).to_be_bytes());
+        payload.extend_from_slice(&3_i32.to_be_bytes());
+        write_varint(2, &mut payload);
+        let first = (15_u16 << 12) | (7_u16 << 8) | 255_u16;
+        payload.extend_from_slice(&first.to_be_bytes());
+        write_varint(0x45, &mut payload);
+        let second = (2_u16 << 12) | (4_u16 << 8) | 10_u16;
+        payload.extend_from_slice(&second.to_be_bytes());
+        write_varint(0x91, &mut payload);
+        let decoded = decode_multi_block_change(&payload).unwrap();
+        assert_eq!(decoded.chunk, ChunkPos::new(-1, 3));
+        assert_eq!(decoded.records.len(), 2);
+        assert_eq!(decoded.records[0].position, BlockPos::new(-1, 255, 55));
+        assert_eq!(decoded.records[0].state, BlockState(0x45));
+        assert_eq!(decoded.records[1].position, BlockPos::new(-14, 10, 52));
+        assert_eq!(decoded.records[1].state, BlockState(0x91));
+    }
+
+    #[test]
+    fn rejects_invalid_multi_block_change_count_and_trailing_bytes() {
+        let mut too_many = Vec::new();
+        too_many.extend_from_slice(&0_i32.to_be_bytes());
+        too_many.extend_from_slice(&0_i32.to_be_bytes());
+        write_varint(4097, &mut too_many);
+        assert!(matches!(decode_multi_block_change(&too_many), Err(ProtocolError::InvalidBlockUpdate(_))));
+        let mut trailing = Vec::new();
+        trailing.extend_from_slice(&0_i32.to_be_bytes());
+        trailing.extend_from_slice(&0_i32.to_be_bytes());
+        write_varint(0, &mut trailing);
+        trailing.push(1);
+        assert!(matches!(decode_multi_block_change(&trailing), Err(ProtocolError::InvalidBlockUpdate(_))));
     }
     #[test]
     fn parses_host_ports() {
