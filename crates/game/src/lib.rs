@@ -84,7 +84,6 @@ impl World {
             }
         }
 
-        let mut distance = 0.0;
         let mut face = [0, 0, 0];
         let mut steps = 0;
         loop {
@@ -92,7 +91,7 @@ impl World {
             if self.contains(pos) { return Some(RayHit { block: pos, face, distance_steps: steps }); }
             let axis = if t_max[0] <= t_max[1] && t_max[0] <= t_max[2] { 0 }
                 else if t_max[1] <= t_max[2] { 1 } else { 2 };
-            distance = t_max[axis];
+            let distance = t_max[axis];
             if !distance.is_finite() || distance > max_distance { return None; }
             cell[axis] += step[axis];
             face = [0, 0, 0];
