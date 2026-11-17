@@ -1,4 +1,4 @@
-mod status;
+mod status;\nmod login;
 
 use game::ChunkPos;
 use protocol::encode_varint;
@@ -8,7 +8,7 @@ fn print_usage() {
     println!("Usage:");
     println!("  rust-edition                 Show client foundation info");
     println!("  rust-edition --window        Open the GPU-rendered client window");
-    println!("  rust-edition --status HOST[:PORT]  Query a Minecraft server status");
+    println!("  rust-edition --status HOST[:PORT]  Query a Minecraft server status");\n    println!("  rust-edition --login HOST[:PORT] --username NAME  Test offline-mode login");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -23,6 +23,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("Offline profile: {username}");
         renderer::run_window_with_username(username).map_err(|error| format!("renderer: {error}"))?;
+        return Ok(());
+    }
+
+    if args.get(1).map(String::as_str) == Some("--login") {
+        let target = args.get(2).ok_or("missing server address; example: localhost:25565")?;
+        let username = args.iter().position(|arg| arg == "--username")
+            .and_then(|index| args.get(index + 1))
+            .map(String::as_str)
+            .ok_or("missing --username NAME")?;
+        let (host, port) = match target.rsplit_once(':') {
+            Some((host, port)) if !host.contains(']') => (host, port.parse::<u16>()?),
+            _ => (target.as_str(), 25565),
+        };
+        let accepted = login::login_offline(host, port, username)?;
+        println!("Offline login accepted by {host}:{port}");
+        println!("Username: {}", accepted.username);
+        println!("UUID: {}", accepted.uuid);
+        println!("Note: this only completes the login handshake; world/play packets are not implemented yet.");
         return Ok(());
     }
 
