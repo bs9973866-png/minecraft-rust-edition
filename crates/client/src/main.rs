@@ -124,7 +124,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                     true,
                                     bulk.primary_bitmap,
                                     &bulk.data,
-                                    sky_light,
+                                    *sky_light,
                                 ) {
                                     Ok(column) => {
                                         if event_tx.send(ServerEvent::ChunkColumn(column)).is_err() {
@@ -138,7 +138,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         PlayPacket::BlockChange { x, y, z, state } => {
-                            let change = (BlockPos::new(x, y, z), BlockState(state));
+                            let change = (BlockPos::new(*x, *y, *z), BlockState(*state));
                             if event_tx.send(ServerEvent::BlockChanges(vec![change])).is_err() {
                                 break;
                             }
