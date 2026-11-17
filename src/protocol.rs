@@ -261,7 +261,6 @@ pub fn read_compressed_frame<R: Read>(reader: &mut R, maximum_uncompressed: usiz
     Ok(decoded)
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
 /// Decode clientbound S2F Set Slot (0x2F). Window -1, slot -1 updates the carried cursor stack.
 pub fn decode_set_slot(payload: &[u8]) -> Result<SetSlotData, ProtocolError> {
     let mut cursor = PacketCursor::new(payload);
@@ -282,6 +281,7 @@ pub fn decode_window_items(payload: &[u8]) -> Result<WindowItemsData, ProtocolEr
     Ok(WindowItemsData { window_id, items })
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LoginSuccess {
     pub uuid: String,
     pub username: String,
