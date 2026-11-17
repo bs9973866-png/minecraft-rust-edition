@@ -59,6 +59,7 @@ fn print_play_event(event: PlayEvent, world: &World) {
             "[BLOCKS] {} block changes in chunk {}, {}",
             change.records.len(), change.chunk.x, change.chunk.z
         ),
+        PlayEvent::HeldItemChange(slot) => println!("[HOTBAR] selected slot {slot}"),
         PlayEvent::KeepAliveResponded(_) => {}
         PlayEvent::Unknown { packet_id, payload } => println!(
             "[PACKET] unhandled Play packet 0x{packet_id:02X} ({} payload bytes)",

@@ -18,6 +18,7 @@ An independent, clean-room Rust implementation project targeting the **Minecraft
 - TCP offline-mode login flow using handshake + login start, negotiated compression, and a persistent Play-state packet stream; online-mode encryption is explicitly refused.
 - Play-state packet dispatcher for Join Game, chat, time, spawn position, respawn, player teleport, chunks, block updates, and bulk chunks; Keep Alive is automatically echoed.
 - World-event pump that applies incoming chunk and block updates to the world model.
+- Serverbound movement (position, look, position+look), mining status, held-hotbar slot, and animation packets; PlaySession exposes send methods.
 - World application for full and partial chunk updates, with packed light-nibble access.
 - Bounded packet cursor with primitive and UTF-8 string readers.
 - Sparse 16×256×16 chunk/world storage with correct negative-coordinate chunk math.

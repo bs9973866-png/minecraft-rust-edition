@@ -23,7 +23,7 @@ pub enum ProtocolError {
     InvalidChunkData(&'static str), InvalidBlockUpdate(&'static str),
     UnexpectedPacket { expected: i32, actual: i32 }, InvalidAddress(String),
     OnlineModeRequired, LoginRejected(String), InvalidLoginPacket(i32),
-    MissingJoinGame, WorldUpdate(String),
+    MissingJoinGame, WorldUpdate(String), InvalidHotbarSlot(i32),
 }
 
 impl fmt::Display for ProtocolError {
@@ -46,6 +46,7 @@ impl fmt::Display for ProtocolError {
             Self::InvalidLoginPacket(id) => write!(f, "unexpected login-state packet id: {id}"),
             Self::MissingJoinGame => write!(f, "received chunk data before Join Game"),
             Self::WorldUpdate(error) => write!(f, "failed to update world: {error}"),
+            Self::InvalidHotbarSlot(slot) => write!(f, "hotbar slot must be between 0 and 8, got {slot}"),
         }
     }
 }
@@ -331,7 +332,65 @@ pub fn encode_keep_alive_response(id: i32) -> Vec<u8> {
 }
 
 /// Serverbound Player Position & Look (packet ID 0x06).
-pub fn encode_player_position_look(update: PlayerMove, on_ground: bool) -> Vec<u8> {
+/// Digging actions sent in C07 Player Digging (0x07).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(i32)]
+pub enum DiggingStatus {
+    Start = 0, Cancel = 1, Finish = 2, DropStack = 3, DropItem = 4, ReleaseUseItem = 5,
+}
+
+/// Block face ordinals used by protocol 47.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BlockFace { Down = 0, Up = 1, North = 2, South = 3, West = 4, East = 5 }
+
+fn encode_packed_position(position: BlockPos) -> i64 {
+    (((position.x as i64) & 0x03ff_ffff) << 38)
+        | (((position.y as i64) & 0x0fff) << 26)
+        | ((position.z as i64) & 0x03ff_ffff)
+}
+
+pub fn decode_held_item_change(payload: &[u8]) -> Result<u8, ProtocolError> {
+    if payload.len() != 1 { return Err(ProtocolError::InvalidBlockUpdate("held-item change must contain one byte")); }
+    if payload[0] > 8 { return Err(ProtocolError::InvalidHotbarSlot(payload[0] as i32)); }
+    Ok(payload[0])
+}
+
+pub fn encode_held_item_change(slot: u8) -> Result<Vec<u8>, ProtocolError> {
+    if slot > 8 { return Err(ProtocolError::InvalidHotbarSlot(slot as i32)); }
+    Ok(encode_packet(0x09, &(slot as i16).to_be_bytes()))
+}
+
+pub fn encode_player_position(x: f64, y: f64, z: f64, on_ground: bool) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(25);
+    payload.extend_from_slice(&x.to_be_bytes());
+    payload.extend_from_slice(&y.to_be_bytes());
+    payload.extend_from_slice(&z.to_be_bytes());
+    payload.push(u8::from(on_ground));
+    encode_packet(0x04, &payload)
+}
+
+pub fn encode_player_look(yaw: f32, pitch: f32, on_ground: bool) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(9);
+    payload.extend_from_slice(&yaw.to_be_bytes());
+    payload.extend_from_slice(&pitch.to_be_bytes());
+    payload.push(u8::from(on_ground));
+    encode_packet(0x05, &payload)
+}
+
+pub fn encode_player_ground(on_ground: bool) -> Vec<u8> {
+    encode_packet(0x03, &[u8::from(on_ground)])
+}
+
+pub fn encode_player_digging(status: DiggingStatus, position: BlockPos, face: BlockFace) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(10);
+    write_varint(status as i32, &mut payload);
+    payload.extend_from_slice(&encode_packed_position(position).to_be_bytes());
+    payload.push(face as u8);
+    encode_packet(0x07, &payload)
+}
+
+pub fn player_position_look_payload(update: PlayerMove, on_ground: bool) -> Vec<u8> {
     let mut payload = Vec::with_capacity(33);
     payload.extend_from_slice(&update.x.to_be_bytes());
     payload.extend_from_slice(&update.y.to_be_bytes());
@@ -339,7 +398,11 @@ pub fn encode_player_position_look(update: PlayerMove, on_ground: bool) -> Vec<u
     payload.extend_from_slice(&update.yaw.to_be_bytes());
     payload.extend_from_slice(&update.pitch.to_be_bytes());
     payload.push(u8::from(on_ground));
-    encode_packet(0x06, &payload)
+    payload
+}
+
+pub fn encode_player_position_look(update: PlayerMove, on_ground: bool) -> Vec<u8> {
+    encode_packet(0x06, &player_position_look_payload(update, on_ground))
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -636,6 +699,7 @@ pub enum PlayEvent {
     ChunkBulk(MapChunkBulkData),
     BlockChange(BlockChange),
     MultiBlockChange(MultiBlockChange),
+    HeldItemChange(u8),
     KeepAliveResponded(i32),
     Unknown { packet_id: i32, payload: Vec<u8> },
 }
@@ -646,11 +710,12 @@ pub struct PlaySession {
     pub stream: PacketStream<TcpStream>,
     pub entity_id: i32,
     pub dimension: Option<i8>,
+    pub selected_hotbar_slot: u8,
 }
 
 impl LoginSession {
     pub fn into_play(self) -> PlaySession {
-        PlaySession { identity: self.identity, stream: self.stream, entity_id: 0, dimension: None }
+        PlaySession { identity: self.identity, stream: self.stream, entity_id: 0, dimension: None, selected_hotbar_slot: 0 }
     }
 }
 
@@ -689,6 +754,11 @@ impl PlaySession {
                 Ok(PlayEvent::Respawn(respawn))
             }
             0x08 => Ok(PlayEvent::PlayerPositionLook(decode_player_position_look(payload)?)),
+            0x09 => {
+                let slot = decode_held_item_change(payload)?;
+                self.selected_hotbar_slot = slot;
+                Ok(PlayEvent::HeldItemChange(slot))
+            }
             0x21 => {
                 let dimension = self.dimension.ok_or(ProtocolError::MissingJoinGame)?;
                 Ok(PlayEvent::Chunk(decode_chunk_data_packet(payload, dimension == 0)?))
@@ -698,6 +768,53 @@ impl PlaySession {
             0x26 => Ok(PlayEvent::ChunkBulk(decode_map_chunk_bulk(payload)?)),
             other => Ok(PlayEvent::Unknown { packet_id: other, payload: payload.to_vec() }),
         }
+    }
+
+    /// Send a full position + rotation update (C06).
+    pub fn send_player_movement(&mut self, movement: PlayerMove, on_ground: bool) -> Result<(), ProtocolError> {
+        self.stream.write_packet(0x06, &player_position_look_payload(movement, on_ground))
+    }
+
+    /// Send a position-only update (C04).
+    pub fn send_player_position(&mut self, x: f64, y: f64, z: f64, on_ground: bool) -> Result<(), ProtocolError> {
+        let mut payload = Vec::with_capacity(25);
+        payload.extend_from_slice(&x.to_be_bytes());
+        payload.extend_from_slice(&y.to_be_bytes());
+        payload.extend_from_slice(&z.to_be_bytes());
+        payload.push(u8::from(on_ground));
+        self.stream.write_packet(0x04, &payload)
+    }
+
+    /// Send a rotation-only update (C05).
+    pub fn send_player_look(&mut self, yaw: f32, pitch: f32, on_ground: bool) -> Result<(), ProtocolError> {
+        let mut payload = Vec::with_capacity(9);
+        payload.extend_from_slice(&yaw.to_be_bytes());
+        payload.extend_from_slice(&pitch.to_be_bytes());
+        payload.push(u8::from(on_ground));
+        self.stream.write_packet(0x05, &payload)
+    }
+
+    pub fn send_player_ground(&mut self, on_ground: bool) -> Result<(), ProtocolError> {
+        self.stream.write_packet(0x03, &[u8::from(on_ground)])
+    }
+
+    pub fn send_digging(&mut self, status: DiggingStatus, position: BlockPos, face: BlockFace) -> Result<(), ProtocolError> {
+        let mut payload = Vec::with_capacity(10);
+        write_varint(status as i32, &mut payload);
+        payload.extend_from_slice(&encode_packed_position(position).to_be_bytes());
+        payload.push(face as u8);
+        self.stream.write_packet(0x07, &payload)
+    }
+
+    pub fn send_held_item_change(&mut self, slot: u8) -> Result<(), ProtocolError> {
+        if slot > 8 { return Err(ProtocolError::InvalidHotbarSlot(slot as i32)); }
+        self.stream.write_packet(0x09, &(slot as i16).to_be_bytes())?;
+        self.selected_hotbar_slot = slot;
+        Ok(())
+    }
+
+    pub fn send_animation(&mut self) -> Result<(), ProtocolError> {
+        self.stream.write_packet(0x0A, &[])
     }
 
     /// Read the next event and apply authoritative world changes before returning it.
@@ -1269,6 +1386,7 @@ mod tests {
             stream: PacketStream::new(socket),
             entity_id: 0,
             dimension: None,
+            selected_hotbar_slot: 0,
         };
         assert!(matches!(play.read_event(), Err(ProtocolError::MissingJoinGame)));
         server.join().unwrap();
@@ -1302,6 +1420,7 @@ mod tests {
             stream: PacketStream::new(socket),
             entity_id: 0,
             dimension: None,
+            selected_hotbar_slot: 0,
         };
         let mut world = World::new();
         assert!(matches!(play.read_world_event(&mut world).unwrap(), PlayEvent::JoinGame(_)));
@@ -1309,6 +1428,102 @@ mod tests {
         assert!(matches!(event, PlayEvent::Chunk(_)));
         assert_eq!(world.chunk_count(), 1);
         assert_eq!(world.get_block(BlockPos::new(-45, 33, 114)), BlockState(0x1234));
+        server.join().unwrap();
+    }
+    #[test]
+    fn movement_digging_and_hotbar_encoders_match_protocol_47_layout() {
+        let position = BlockPos::new(-12345, 64, 54321);
+        let movement = PlayerMove { x: 12.5, y: 64.0, z: -3.25, yaw: 90.0, pitch: -15.0 };
+        let mut full = PacketCursor::new(&read_frame(&mut Cursor::new(encode_player_position_look(movement, true)), 64).unwrap());
+        assert_eq!(full.read_varint().unwrap(), 0x06);
+        assert_eq!(full.read_f64().unwrap(), 12.5);
+        assert_eq!(full.read_f64().unwrap(), 64.0);
+        assert_eq!(full.read_f64().unwrap(), -3.25);
+        assert_eq!(full.read_f32().unwrap(), 90.0);
+        assert_eq!(full.read_f32().unwrap(), -15.0);
+        assert_eq!(full.read_u8().unwrap(), 1);
+
+        let mut pos = PacketCursor::new(&read_frame(&mut Cursor::new(encode_player_position(1.0, 2.0, 3.0, false)), 64).unwrap());
+        assert_eq!(pos.read_varint().unwrap(), 0x04);
+        assert_eq!(pos.read_f64().unwrap(), 1.0);
+        assert_eq!(pos.read_f64().unwrap(), 2.0);
+        assert_eq!(pos.read_f64().unwrap(), 3.0);
+        assert_eq!(pos.read_u8().unwrap(), 0);
+
+        let mut look = PacketCursor::new(&read_frame(&mut Cursor::new(encode_player_look(45.0, 10.0, true)), 64).unwrap());
+        assert_eq!(look.read_varint().unwrap(), 0x05);
+        assert_eq!(look.read_f32().unwrap(), 45.0);
+        assert_eq!(look.read_f32().unwrap(), 10.0);
+        assert_eq!(look.read_u8().unwrap(), 1);
+
+        let digging = encode_player_digging(DiggingStatus::Start, position, BlockFace::East);
+        let body = read_frame(&mut Cursor::new(digging), 64).unwrap();
+        let mut dig = PacketCursor::new(&body);
+        assert_eq!(dig.read_varint().unwrap(), 0x07);
+        assert_eq!(dig.read_varint().unwrap(), DiggingStatus::Start as i32);
+        assert_eq!(decode_packed_position(dig.read_i64().unwrap() as u64), position);
+        assert_eq!(dig.read_u8().unwrap(), BlockFace::East as u8);
+        assert!(dig.is_empty());
+
+        let slot = encode_held_item_change(8).unwrap();
+        let body = read_frame(&mut Cursor::new(slot), 64).unwrap();
+        let mut held = PacketCursor::new(&body);
+        assert_eq!(held.read_varint().unwrap(), 0x09);
+        assert_eq!(held.read_i16().unwrap(), 8);
+        assert!(encode_held_item_change(9).is_err());
+    }
+
+    #[test]
+    fn decodes_server_selected_hotbar_slot() {
+        assert_eq!(decode_held_item_change(&[4]).unwrap(), 4);
+        assert!(decode_held_item_change(&[9]).is_err());
+        assert!(decode_held_item_change(&[]).is_err());
+    }
+
+    #[test]
+    fn play_session_sends_movement_digging_and_held_slot_packets() {
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let movement = read_frame(&mut socket, 128).unwrap();
+            let mut movement = PacketCursor::new(&movement);
+            assert_eq!(movement.read_varint().unwrap(), 0x06);
+            assert_eq!(movement.read_f64().unwrap(), 1.0);
+            assert_eq!(movement.read_f64().unwrap(), 65.0);
+            assert_eq!(movement.read_f64().unwrap(), 2.0);
+            assert_eq!(movement.read_f32().unwrap(), 30.0);
+            assert_eq!(movement.read_f32().unwrap(), -5.0);
+            assert_eq!(movement.read_u8().unwrap(), 1);
+
+            let digging = read_frame(&mut socket, 128).unwrap();
+            let mut digging = PacketCursor::new(&digging);
+            assert_eq!(digging.read_varint().unwrap(), 0x07);
+            assert_eq!(digging.read_varint().unwrap(), 0);
+            assert_eq!(decode_packed_position(digging.read_i64().unwrap() as u64), BlockPos::new(4, 64, -2));
+            assert_eq!(digging.read_u8().unwrap(), 1);
+
+            let held = read_frame(&mut socket, 64).unwrap();
+            let mut held = PacketCursor::new(&held);
+            assert_eq!(held.read_varint().unwrap(), 0x09);
+            assert_eq!(held.read_i16().unwrap(), 6);
+        });
+
+        let socket = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        let mut play = PlaySession {
+            identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
+            stream: PacketStream::new(socket),
+            entity_id: 1, dimension: Some(0), selected_hotbar_slot: 0,
+        };
+        play.send_player_movement(PlayerMove { x: 1.0, y: 65.0, z: 2.0, yaw: 30.0, pitch: -5.0 }, true).unwrap();
+        play.send_digging(DiggingStatus::Start, BlockPos::new(4, 64, -2), BlockFace::Up).unwrap();
+        play.send_held_item_change(6).unwrap();
+        assert_eq!(play.selected_hotbar_slot, 6);
         server.join().unwrap();
     }
     #[test]
