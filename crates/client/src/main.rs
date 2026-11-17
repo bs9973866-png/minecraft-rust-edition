@@ -88,12 +88,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let render = RenderConfig::default();
 
     println!("Minecraft 1.8.9 — Rust Edition");
-    println!("Milestone: protocol status ping");
+    println!("Milestone: status ping + offline-mode login handshake");
     println!("Target protocol: 47 (1.8.9)");
     println!("Protocol version VarInt bytes: {encoded_protocol_version:02x?}");
     println!("Initial chunk coordinate: {spawn_chunk:?}");
     println!("Renderer config: {render:?}");
-    println!("Use --status HOST[:PORT] to test a Minecraft server.");
+    println!("Use --status HOST[:PORT] to query a server, or --login HOST[:PORT] --username NAME for offline-mode login.");
     Ok(())
 }
 
