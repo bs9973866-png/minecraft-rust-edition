@@ -2,7 +2,7 @@
 //! Draws a generated voxel test world with a movable first-person-style camera.
 
 use std::sync::Arc;
-use game::{BlockPos, World};
+use game::World;
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
