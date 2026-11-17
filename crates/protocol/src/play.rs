@@ -20,7 +20,7 @@ pub enum PlayPacket {
     HeldItemChange { slot: u8 },
     SpawnPlayer { entity_id: i32, uuid: String, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, held_item: i16, metadata: Vec<u8> },
     SpawnMob { entity_id: i32, uuid: String, mob_type: u8, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, head_yaw: u8, velocity: [i16; 3], metadata: Vec<u8> },
-    SpawnObject { entity_id: i32, object_type: u8, x: i32, y: i32, z: i32, pitch: u8, yaw: u8, data: i32, velocity: Option<[i16; 3]> },
+    SpawnObject { entity_id: i32, object_type: u8, x: f64, y: f64, z: f64, pitch: u8, yaw: u8, data: i32, velocity: Option<[i16; 3]> },
     DestroyEntities { entity_ids: Vec<i32> },
     EntityRelativeMove { entity_id: i32, delta: [i8; 3], on_ground: bool },
     EntityTeleport { entity_id: i32, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, on_ground: bool },
@@ -326,9 +326,9 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
         0x0e => {
             let entity_id = r.varint()?;
             let object_type = r.u8()?;
-            let x = r.i32()?;
-            let y = r.i32()?;
-            let z = r.i32()?;
+            let x = r.f64()?;
+            let y = r.f64()?;
+            let z = r.f64()?;
             let pitch = r.u8()?;
             let yaw = r.u8()?;
             let data = r.i32()?;
@@ -441,14 +441,14 @@ mod tests {
         let mut p = vec![0x0e];
         encode_varint(300, &mut p);
         p.push(2);
-        p.extend_from_slice(&(-32_i32).to_be_bytes());
-        p.extend_from_slice(&64_i32.to_be_bytes());
-        p.extend_from_slice(&128_i32.to_be_bytes());
+        p.extend_from_slice(&(-1.0_f64).to_be_bytes());
+        p.extend_from_slice(&2.0_f64.to_be_bytes());
+        p.extend_from_slice(&4.0_f64.to_be_bytes());
         p.extend_from_slice(&[10, 20]);
         p.extend_from_slice(&1_i32.to_be_bytes());
         p.extend_from_slice(&[1_i16.to_be_bytes(), (-2_i16).to_be_bytes(), 3_i16.to_be_bytes()].concat());
         assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::SpawnObject {
-            entity_id: 300, object_type: 2, x: -32, y: 64, z: 128,
+            entity_id: 300, object_type: 2, x: -1.0, y: 2.0, z: 4.0,
             pitch: 10, yaw: 20, data: 1, velocity: Some([1, -2, 3]),
         });
     }
