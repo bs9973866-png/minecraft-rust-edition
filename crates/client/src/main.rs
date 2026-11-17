@@ -1,7 +1,7 @@
 mod status;
 mod login;
 
-use game::{decode_chunk_column, BlockPos, BlockState, ChunkPos, ServerEvent};
+use game::{decode_chunk_column, BlockPos, BlockState, ChunkPos, PlayerMovement, ServerEvent};
 use protocol::{encode_varint, PlayPacket};
 use std::{sync::mpsc, thread};
 use renderer::RenderConfig;
@@ -50,18 +50,17 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     if args.get(1).map(String::as_str) == Some("--join") {
         let target = args.get(2).ok_or("missing server address; example: localhost:25565")?;
-        let username = username_arg(&args)?;
+        let username = username_arg(&args)?.to_owned();
         let (host, port) = parse_target(target)?;
         let host = host.to_owned();
-        let username = username.to_owned();
-        let thread_host = host.clone();
-        let thread_username = username.clone();
         let (event_tx, event_rx) = mpsc::channel::<ServerEvent>();
+        let (control_tx, control_rx) =
+            mpsc::channel::<(mpsc::Sender<PlayerMovement>, login::PlayPacketSender)>();
 
         thread::Builder::new()
             .name("rust-edition-network".into())
             .spawn(move || {
-                let mut session = match login::connect_offline(&thread_host, port, &thread_username) {
+                let mut session = match login::connect_offline(&host, port, &username) {
                     Ok(session) => session,
                     Err(error) => {
                         eprintln!("[NETWORK] connection failed: {error}");
@@ -69,11 +68,33 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                 };
                 eprintln!(
-                    "[NETWORK] connected to {thread_host}:{port} as {}",
+                    "[NETWORK] connected to {host}:{port} as {}",
                     session.player.username
                 );
                 if let Err(error) = session.send_client_settings() {
                     eprintln!("[NETWORK] could not send client settings: {error}");
+                    return;
+                }
+
+                let packet_sender = session.packet_sender();
+                let movement_sender = packet_sender.clone();
+                let (movement_tx, movement_rx) = mpsc::channel::<PlayerMovement>();
+                if let Err(error) = thread::Builder::new()
+                    .name("rust-edition-movement-writer".into())
+                    .spawn(move || {
+                        while let Ok(movement) = movement_rx.recv() {
+                            if let Err(error) = movement_sender.send_player_movement(movement) {
+                                eprintln!("[NETWORK] movement send failed: {error}");
+                                break;
+                            }
+                        }
+                    })
+                {
+                    eprintln!("[NETWORK] could not start movement writer: {error}");
+                    return;
+                }
+
+                if control_tx.send((movement_tx, packet_sender)).is_err() {
                     return;
                 }
 
@@ -111,9 +132,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                         break;
                                     }
                                 }
-                                Err(error) => {
-                                    eprintln!("[CHUNK] rejected ({x}, {z}): {error}");
-                                }
+                                Err(error) => eprintln!("[CHUNK] rejected ({x}, {z}): {error}"),
                             }
                         }
                         PlayPacket::ChunkDataBulk { sky_light, chunks } => {
@@ -128,12 +147,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 ) {
                                     Ok(column) => {
                                         if event_tx.send(ServerEvent::ChunkColumn(column)).is_err() {
-                                            break;
+                                            return;
                                         }
                                     }
-                                    Err(error) => {
-                                        eprintln!("[CHUNK-BULK] rejected ({}, {}): {error}", bulk.x, bulk.z);
-                                    }
+                                    Err(error) => eprintln!(
+                                        "[CHUNK-BULK] rejected ({}, {}): {error}",
+                                        bulk.x, bulk.z
+                                    ),
                                 }
                             }
                         }
@@ -144,8 +164,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         PlayPacket::MultiBlockChange { changes, .. } => {
-                            let changes = changes.into_iter()
-                                .map(|change| (BlockPos::new(change.x, change.y, change.z), BlockState(change.state)))
+                            let changes = changes.iter()
+                                .map(|change| (
+                                    BlockPos::new(change.x, change.y, change.z),
+                                    BlockState(change.state),
+                                ))
                                 .collect();
                             if event_tx.send(ServerEvent::BlockChanges(changes)).is_err() {
                                 break;
@@ -169,17 +192,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     }
                     if matches!(packet, PlayPacket::PlayerPositionLook { .. }) {
                         let position = session.position().map(|v| v as f32);
-                        if event_tx.send(ServerEvent::Teleport(position)).is_err() {
+                        let (yaw, pitch) = session.rotation();
+                        if event_tx.send(ServerEvent::Teleport { position, yaw, pitch }).is_err() {
                             break;
                         }
                     }
                 }
             })?;
 
+        // Wait until login completes so the renderer receives a live movement channel.
+        let (movement_tx, packet_sender) = control_rx
+            .recv()
+            .map_err(|_| "server connection ended before the game window could open")?;
         println!("Opening server world window for {username} at {host}:{port}.");
-        println!("Incoming server chunks are rendered; movement is still local and not yet synchronized.");
-        renderer::run_window_with_server_events(&username, event_rx)
-            .map_err(|error| format!("renderer: {error}"))?;
+        println!("Server chunks and block updates are rendered; WASD movement is sent to the server.");
+        let render_result =
+            renderer::run_window_with_server_events(&username, event_rx, movement_tx);
+        let _ = packet_sender.shutdown();
+        render_result.map_err(|error| format!("renderer: {error}"))?;
         return Ok(());
     }
 
