@@ -1,7 +1,7 @@
 mod status;
 mod login;
 
-use game::{decode_chunk_column, ChunkPos, ServerEvent};
+use game::{decode_chunk_column, BlockPos, BlockState, ChunkPos, ServerEvent};
 use protocol::{encode_varint, PlayPacket};
 use std::{sync::mpsc, thread};
 use renderer::RenderConfig;
@@ -116,6 +116,41 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 }
                             }
                         }
+                        PlayPacket::ChunkDataBulk { sky_light, chunks } => {
+                            for bulk in chunks {
+                                match decode_chunk_column(
+                                    bulk.x,
+                                    bulk.z,
+                                    true,
+                                    bulk.primary_bitmap,
+                                    &bulk.data,
+                                    sky_light,
+                                ) {
+                                    Ok(column) => {
+                                        if event_tx.send(ServerEvent::ChunkColumn(column)).is_err() {
+                                            break;
+                                        }
+                                    }
+                                    Err(error) => {
+                                        eprintln!("[CHUNK-BULK] rejected ({}, {}): {error}", bulk.x, bulk.z);
+                                    }
+                                }
+                            }
+                        }
+                        PlayPacket::BlockChange { x, y, z, state } => {
+                            let change = (BlockPos::new(x, y, z), BlockState(state));
+                            if event_tx.send(ServerEvent::BlockChanges(vec![change])).is_err() {
+                                break;
+                            }
+                        }
+                        PlayPacket::MultiBlockChange { changes, .. } => {
+                            let changes = changes.into_iter()
+                                .map(|change| (BlockPos::new(change.x, change.y, change.z), BlockState(change.state)))
+                                .collect();
+                            if event_tx.send(ServerEvent::BlockChanges(changes)).is_err() {
+                                break;
+                            }
+                        }
                         PlayPacket::ChatMessage { json, position } => {
                             eprintln!("[CHAT:{position}] {json}");
                         }
@@ -177,6 +212,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("[POSITION] server correction ({x:.2}, {y:.2}, {z:.2}), yaw={yaw:.1}, pitch={pitch:.1}, flags=0x{flags:02x}"),
                 PlayPacket::ChunkData { x, z, primary_bitmap, data, .. } =>
                     println!("[CHUNK] received ({x}, {z}), sections=0x{primary_bitmap:04x}, payload={} bytes", data.len()),
+                PlayPacket::ChunkDataBulk { sky_light, chunks } =>
+                    println!("[CHUNK-BULK] received {} columns (sky light: {sky_light})", chunks.len()),
+                PlayPacket::BlockChange { x, y, z, state } =>
+                    println!("[BLOCK] ({x}, {y}, {z}) -> state {state}"),
+                PlayPacket::MultiBlockChange { chunk_x, chunk_z, changes } =>
+                    println!("[BLOCKS] {} updates in chunk ({chunk_x}, {chunk_z})", changes.len()),
                 PlayPacket::KeepAlive { id } =>
                     println!("[KEEP-ALIVE] replied to id={id}"),
                 PlayPacket::Unknown { id, payload } =>
