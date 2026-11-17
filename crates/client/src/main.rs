@@ -299,6 +299,26 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 break;
                             }
                         }
+                        PlayPacket::SpawnPlayer { entity_id, x, y, z, yaw, pitch, .. } => {
+                            let entity = EntityState {
+                                entity_id: *entity_id,
+                                object_type: u8::MAX,
+                                position: [f64::from(*x) / 32.0, f64::from(*y) / 32.0, f64::from(*z) / 32.0],
+                                yaw: f32::from(*yaw) * (360.0 / 256.0),
+                                pitch: f32::from(*pitch) * (360.0 / 256.0),
+                            };
+                            if event_tx.send(ServerEvent::EntitySpawn(entity)).is_err() { break; }
+                        }
+                        PlayPacket::SpawnMob { entity_id, mob_type, x, y, z, yaw, pitch, .. } => {
+                            let entity = EntityState {
+                                entity_id: *entity_id,
+                                object_type: *mob_type,
+                                position: [f64::from(*x) / 32.0, f64::from(*y) / 32.0, f64::from(*z) / 32.0],
+                                yaw: f32::from(*yaw) * (360.0 / 256.0),
+                                pitch: f32::from(*pitch) * (360.0 / 256.0),
+                            };
+                            if event_tx.send(ServerEvent::EntitySpawn(entity)).is_err() { break; }
+                        }
                         PlayPacket::SpawnObject { entity_id, object_type, x, y, z, pitch, yaw, .. } => {
                             let entity = EntityState {
                                 entity_id: *entity_id,
