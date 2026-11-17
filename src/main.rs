@@ -70,6 +70,19 @@ fn print_play_event(event: PlayEvent, world: &World) {
             let occupied = data.items.iter().filter(|item| item.is_some()).count();
             println!("[INVENTORY] window={} slots={} occupied={}", data.window_id, data.items.len(), occupied);
         }
+        PlayEvent::OpenWindow(data) => println!(
+            "[WINDOW] opened id={} type={} slots={}",
+            data.window_id, data.inventory_type, data.slot_count
+        ),
+        PlayEvent::CloseWindow(data) => println!("[WINDOW] closed id={}", data.window_id),
+        PlayEvent::WindowProperty(data) => println!(
+            "[WINDOW] id={} property={} value={}",
+            data.window_id, data.property, data.value
+        ),
+        PlayEvent::ConfirmTransaction(data) => println!(
+            "[WINDOW] transaction={} accepted={}",
+            data.action_number, data.accepted
+        ),
         PlayEvent::KeepAliveResponded(_) => {}
         PlayEvent::Unknown { packet_id, payload } => println!(
             "[PACKET] unhandled Play packet 0x{packet_id:02X} ({} payload bytes)",

@@ -109,6 +109,31 @@ pub struct WindowItemsData {
     pub items: Vec<Option<ItemStack>>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OpenWindowData {
+    pub window_id: u8,
+    pub inventory_type: String,
+    pub title_json: String,
+    pub slot_count: u8,
+    pub horse_entity_id: Option<i32>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct CloseWindowData { pub window_id: u8 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WindowPropertyData {
+    pub window_id: u8,
+    pub property: i16,
+    pub value: i16,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConfirmTransactionData {
+    pub window_id: u8,
+    pub action_number: i16,
+    pub accepted: bool,
+}
 /// A bounded cursor for decoding packet payloads.
 #[derive(Clone, Debug)]
 pub struct PacketCursor<'a> { bytes: &'a [u8], offset: usize }
@@ -282,6 +307,51 @@ pub fn decode_window_items(payload: &[u8]) -> Result<WindowItemsData, ProtocolEr
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Decode S2D Open Window (0x2D).
+pub fn decode_open_window(payload: &[u8]) -> Result<OpenWindowData, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let window_id = cursor.read_u8()?;
+    let inventory_type = cursor.read_string(64)?;
+    let title_json = cursor.read_string(32_767)?;
+    let slot_count = cursor.read_u8()?;
+    let horse_entity_id = if inventory_type == "EntityHorse" { Some(cursor.read_i32()?) } else { None };
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidWindowData("trailing bytes in Open Window")); }
+    Ok(OpenWindowData { window_id, inventory_type, title_json, slot_count, horse_entity_id })
+}
+
+pub fn decode_close_window(payload: &[u8]) -> Result<CloseWindowData, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let data = CloseWindowData { window_id: cursor.read_u8()? };
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidWindowData("trailing bytes in Close Window")); }
+    Ok(data)
+}
+
+pub fn decode_window_property(payload: &[u8]) -> Result<WindowPropertyData, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let data = WindowPropertyData { window_id: cursor.read_u8()?, property: cursor.read_i16()?, value: cursor.read_i16()? };
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidWindowData("trailing bytes in Window Property")); }
+    Ok(data)
+}
+
+pub fn decode_confirm_transaction(payload: &[u8]) -> Result<ConfirmTransactionData, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let window_id = cursor.read_u8()?;
+    let action_number = cursor.read_i16()?;
+    let raw_accepted = cursor.read_u8()?;
+    if raw_accepted > 1 { return Err(ProtocolError::InvalidWindowData("invalid transaction acceptance flag")); }
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidWindowData("trailing bytes in Confirm Transaction")); }
+    Ok(ConfirmTransactionData { window_id, action_number, accepted: raw_accepted != 0 })
+}
+
+/// Clientbound S32 may be rejected; the client answers with C0F using accepted=true.
+pub fn encode_confirm_transaction_reply(window_id: u8, action_number: i16, accepted: bool) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(4);
+    payload.push(window_id);
+    payload.extend_from_slice(&action_number.to_be_bytes());
+    payload.push(u8::from(accepted));
+    encode_packet(0x0F, &payload)
+}
+
 pub struct LoginSuccess {
     pub uuid: String,
     pub username: String,
@@ -778,6 +848,10 @@ pub enum PlayEvent {
     HeldItemChange(u8),
     SetSlot(SetSlotData),
     WindowItems(WindowItemsData),
+    OpenWindow(OpenWindowData),
+    CloseWindow(CloseWindowData),
+    WindowProperty(WindowPropertyData),
+    ConfirmTransaction(ConfirmTransactionData),
     KeepAliveResponded(i32),
     Unknown { packet_id: i32, payload: Vec<u8> },
 }
@@ -791,11 +865,14 @@ pub struct PlaySession {
     pub selected_hotbar_slot: u8,
     pub inventory_windows: std::collections::HashMap<i16, Vec<Option<ItemStack>>>,
     pub carried_item: Option<ItemStack>,
+    pub open_windows: std::collections::HashMap<u8, OpenWindowData>,
+    pub window_properties: std::collections::HashMap<(u8, i16), i16>,
+    pub transaction_results: std::collections::HashMap<(u8, i16), bool>,
 }
 
 impl LoginSession {
     pub fn into_play(self) -> PlaySession {
-        PlaySession { identity: self.identity, stream: self.stream, entity_id: 0, dimension: None, selected_hotbar_slot: 0, inventory_windows: std::collections::HashMap::new(), carried_item: None }
+        PlaySession { identity: self.identity, stream: self.stream, entity_id: 0, dimension: None, selected_hotbar_slot: 0, inventory_windows: std::collections::HashMap::new(), carried_item: None, open_windows: std::collections::HashMap::new(), window_properties: std::collections::HashMap::new(), transaction_results: std::collections::HashMap::new() }
     }
 }
 
@@ -850,6 +927,37 @@ impl PlaySession {
                 let data = decode_window_items(payload)?;
                 self.inventory_windows.insert(data.window_id as i16, data.items.clone());
                 Ok(PlayEvent::WindowItems(data))
+            }
+            0x2D => {
+                let data = decode_open_window(payload)?;
+                self.inventory_windows.entry(data.window_id as i16).or_default();
+                self.open_windows.insert(data.window_id, data.clone());
+                Ok(PlayEvent::OpenWindow(data))
+            }
+            0x2E => {
+                let data = decode_close_window(payload)?;
+                self.open_windows.remove(&data.window_id);
+                self.inventory_windows.remove(&(data.window_id as i16));
+                self.window_properties.retain(|(window, _), _| *window != data.window_id);
+                self.carried_item = None;
+                Ok(PlayEvent::CloseWindow(data))
+            }
+            0x31 => {
+                let data = decode_window_property(payload)?;
+                self.window_properties.insert((data.window_id, data.property), data.value);
+                Ok(PlayEvent::WindowProperty(data))
+            }
+            0x32 => {
+                let data = decode_confirm_transaction(payload)?;
+                self.transaction_results.insert((data.window_id, data.action_number), data.accepted);
+                if !data.accepted {
+                    let mut response = Vec::with_capacity(4);
+                    response.push(data.window_id);
+                    response.extend_from_slice(&data.action_number.to_be_bytes());
+                    response.push(1);
+                    self.stream.write_packet(0x0F, &response)?;
+                }
+                Ok(PlayEvent::ConfirmTransaction(data))
             }
             0x09 => {
                 let slot = decode_held_item_change(payload)?;
@@ -1486,6 +1594,9 @@ mod tests {
             selected_hotbar_slot: 0,
             inventory_windows: std::collections::HashMap::new(),
             carried_item: None,
+            open_windows: std::collections::HashMap::new(),
+            window_properties: std::collections::HashMap::new(),
+            transaction_results: std::collections::HashMap::new(),
         };
         assert!(matches!(play.read_event(), Err(ProtocolError::MissingJoinGame)));
         server.join().unwrap();
@@ -1522,6 +1633,9 @@ mod tests {
             selected_hotbar_slot: 0,
             inventory_windows: std::collections::HashMap::new(),
             carried_item: None,
+            open_windows: std::collections::HashMap::new(),
+            window_properties: std::collections::HashMap::new(),
+            transaction_results: std::collections::HashMap::new(),
         };
         let mut world = World::new();
         assert!(matches!(play.read_world_event(&mut world).unwrap(), PlayEvent::JoinGame(_)));
@@ -1624,6 +1738,7 @@ mod tests {
             stream: PacketStream::new(socket),
             entity_id: 1, dimension: Some(0), selected_hotbar_slot: 0,
             inventory_windows: std::collections::HashMap::new(), carried_item: None,
+            open_windows: std::collections::HashMap::new(), window_properties: std::collections::HashMap::new(), transaction_results: std::collections::HashMap::new(),
         };
         play.send_player_movement(PlayerMove { x: 1.0, y: 65.0, z: 2.0, yaw: 30.0, pitch: -5.0 }, true).unwrap();
         play.send_digging(DiggingStatus::Start, BlockPos::new(4, 64, -2), BlockFace::Up).unwrap();
@@ -1653,9 +1768,9 @@ mod tests {
         let compound = [10, 0, 0, 0];
         let mut payload = vec![0];
         payload.extend_from_slice(&36_i16.to_be_bytes());
-        put_network_item_stack(276, 1, 7, Some(&compound), &mut payload);
+        put_network_item_stack(264, 1, 7, Some(&compound), &mut payload);
         let item = decode_set_slot(&payload).unwrap().item.unwrap();
-        assert_eq!(item.item_id, 276);
+        assert_eq!(item.item_id, 264);
         assert_eq!(item.count, 1);
         assert_eq!(item.damage, 7);
         assert_eq!(item.tag.unwrap().value, Tag::Compound(std::collections::BTreeMap::new()));
@@ -1668,7 +1783,7 @@ mod tests {
         payload.extend_from_slice(&3_i16.to_be_bytes());
         put_network_item_stack(-1, 0, 0, None, &mut payload);
         put_network_item_stack(1, 64, 0, None, &mut payload);
-        put_network_item_stack(276, 1, 7, Some(&compound), &mut payload);
+        put_network_item_stack(264, 1, 7, Some(&compound), &mut payload);
         let decoded = decode_window_items(&payload).unwrap();
         assert_eq!(decoded.window_id, 0);
         assert_eq!(decoded.items.len(), 3);
@@ -1702,7 +1817,7 @@ mod tests {
             window_items.extend_from_slice(&3_i16.to_be_bytes());
             put_network_item_stack(-1, 0, 0, None, &mut window_items);
             put_network_item_stack(1, 64, 0, None, &mut window_items);
-            put_network_item_stack(276, 1, 7, Some(&[10, 0, 0, 0]), &mut window_items);
+            put_network_item_stack(264, 1, 7, Some(&[10, 0, 0, 0]), &mut window_items);
             socket.write_all(&encode_packet(0x30, &window_items)).unwrap();
 
             let mut carried = vec![0xff];
@@ -1726,6 +1841,9 @@ mod tests {
             selected_hotbar_slot: 0,
             inventory_windows: std::collections::HashMap::new(),
             carried_item: None,
+            open_windows: std::collections::HashMap::new(),
+            window_properties: std::collections::HashMap::new(),
+            transaction_results: std::collections::HashMap::new(),
         };
 
         assert!(matches!(play.read_event().unwrap(), PlayEvent::WindowItems(_)));
@@ -1743,6 +1861,90 @@ mod tests {
         let inventory = play.inventory_windows.get(&0).unwrap();
         assert_eq!(inventory[1].as_ref().unwrap().item_id, 5);
         assert_eq!(inventory[1].as_ref().unwrap().count, 12);
+        server.join().unwrap();
+    }
+    #[test]
+    fn decodes_window_lifecycle_and_transaction_packets() {
+        let mut open = vec![4];
+        write_string("EntityHorse", &mut open);
+        write_string(r#"{"text":"Horse"}"#, &mut open);
+        open.push(17);
+        open.extend_from_slice(&123_i32.to_be_bytes());
+        let decoded = decode_open_window(&open).unwrap();
+        assert_eq!(decoded.window_id, 4);
+        assert_eq!(decoded.inventory_type, "EntityHorse");
+        assert_eq!(decoded.title_json, r#"{"text":"Horse"}"#);
+        assert_eq!(decoded.slot_count, 17);
+        assert_eq!(decoded.horse_entity_id, Some(123));
+
+        assert_eq!(decode_close_window(&[4]).unwrap(), CloseWindowData { window_id: 4 });
+
+        let mut property = vec![4];
+        property.extend_from_slice(&2_i16.to_be_bytes());
+        property.extend_from_slice(&150_i16.to_be_bytes());
+        assert_eq!(decode_window_property(&property).unwrap(), WindowPropertyData { window_id: 4, property: 2, value: 150 });
+
+        let confirm = [4, 0x01, 0x23, 0];
+        assert_eq!(decode_confirm_transaction(&confirm).unwrap(), ConfirmTransactionData { window_id: 4, action_number: 0x123, accepted: false });
+        let reply = read_frame(&mut Cursor::new(encode_confirm_transaction_reply(4, 0x123, true)), 64).unwrap();
+        let mut cursor = PacketCursor::new(&reply);
+        assert_eq!(cursor.read_varint().unwrap(), 0x0F);
+        assert_eq!(cursor.read_u8().unwrap(), 4);
+        assert_eq!(cursor.read_i16().unwrap(), 0x123);
+        assert_eq!(cursor.read_u8().unwrap(), 1);
+    }
+
+    #[test]
+    fn play_session_tracks_windows_properties_closes_and_replies_to_rejected_transactions() {
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let mut open = vec![2];
+            write_string("minecraft:chest", &mut open);
+            write_string(r#"{"text":"Test Chest"}"#, &mut open);
+            open.push(27);
+            socket.write_all(&encode_packet(0x2D, &open)).unwrap();
+
+            let mut property = vec![2];
+            property.extend_from_slice(&1_i16.to_be_bytes());
+            property.extend_from_slice(&120_i16.to_be_bytes());
+            socket.write_all(&encode_packet(0x31, &property)).unwrap();
+
+            socket.write_all(&encode_packet(0x32, &[2, 0, 7, 0])).unwrap();
+            let reply = read_frame(&mut socket, 64).unwrap();
+            let mut cursor = PacketCursor::new(&reply);
+            assert_eq!(cursor.read_varint().unwrap(), 0x0F);
+            assert_eq!(cursor.read_u8().unwrap(), 2);
+            assert_eq!(cursor.read_i16().unwrap(), 7);
+            assert_eq!(cursor.read_u8().unwrap(), 1);
+
+            socket.write_all(&encode_packet(0x2E, &[2])).unwrap();
+        });
+        let socket = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut play = PlaySession {
+            identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
+            stream: PacketStream::new(socket), entity_id: 1, dimension: Some(0),
+            selected_hotbar_slot: 0,
+            inventory_windows: std::collections::HashMap::new(), carried_item: None,
+            open_windows: std::collections::HashMap::new(), window_properties: std::collections::HashMap::new(),
+            transaction_results: std::collections::HashMap::new(),
+        };
+        assert!(matches!(play.read_event().unwrap(), PlayEvent::OpenWindow(_)));
+        assert_eq!(play.open_windows.get(&2).unwrap().slot_count, 27);
+        assert!(matches!(play.read_event().unwrap(), PlayEvent::WindowProperty(_)));
+        assert_eq!(play.window_properties.get(&(2, 1)), Some(&120));
+        assert!(matches!(play.read_event().unwrap(), PlayEvent::ConfirmTransaction(_)));
+        assert_eq!(play.transaction_results.get(&(2, 7)), Some(&false));
+        assert!(matches!(play.read_event().unwrap(), PlayEvent::CloseWindow(_)));
+        assert!(!play.open_windows.contains_key(&2));
+        assert!(!play.inventory_windows.contains_key(&2));
         server.join().unwrap();
     }
     #[test]
