@@ -361,7 +361,7 @@ mod tests {
         p.extend_from_slice(&(-1_i32).to_be_bytes());
         p.push(3); // difficulty
         p.push(1); // creative
-        encode_varint(6, &mut p);
+        encode_varint(7, &mut p);
         p.extend_from_slice(b"default");
         assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::Respawn {
             dimension: -1, difficulty: 3, game_mode: 1, level_type: "default".into(),
