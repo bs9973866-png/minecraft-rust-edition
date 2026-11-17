@@ -11,8 +11,19 @@ pub enum PlayPacket {
     UpdateHealth { health: f32, food: i32, food_saturation: f32 },
     PlayerPositionLook { x: f64, y: f64, z: f64, yaw: f32, pitch: f32, flags: u8 },
     ChunkData { x: i32, z: i32, ground_up: bool, primary_bitmap: u16, data: Vec<u8> },
+    BlockChange { x: i32, y: i32, z: i32, state: u16 },
+    MultiBlockChange { chunk_x: i32, chunk_z: i32, changes: Vec<BlockChange> },
     KeepAlive { id: i32 },
     Unknown { id: i32, payload: Vec<u8> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockChange {
+    pub x: i32,
+    pub y: i32,
+    pub z: i32,
+    /// Legacy global block state: (block ID << 4) | metadata.
+    pub state: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -95,6 +106,41 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
         0x08 => PlayPacket::PlayerPositionLook {
             x: r.f64()?, y: r.f64()?, z: r.f64()?, yaw: r.f32()?, pitch: r.f32()?, flags: r.u8()?,
         },
+        0x22 => {
+            let chunk_x = r.i32()?;
+            let chunk_z = r.i32()?;
+            let count = r.varint()?;
+            if !(0..=65_536).contains(&count) {
+                return Err("invalid multi-block-change record count".into());
+            }
+            let mut changes = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                let horizontal = r.u8()?;
+                let y = i32::from(r.u8()?);
+                let state = r.varint()?;
+                if !(0..=u16::MAX as i32).contains(&state) {
+                    return Err("invalid block state in multi-block change".into());
+                }
+                changes.push(BlockChange {
+                    x: chunk_x * 16 + i32::from(horizontal >> 4),
+                    y,
+                    z: chunk_z * 16 + i32::from(horizontal & 0x0f),
+                    state: state as u16,
+                });
+            }
+            PlayPacket::MultiBlockChange { chunk_x, chunk_z, changes }
+        }
+        0x23 => {
+            let packed = r.i64()?;
+            let x = sign_extend((packed >> 38) as i32, 26);
+            let y = sign_extend(((packed >> 26) & 0xfff) as i32, 12);
+            let z = sign_extend((packed & 0x03ff_ffff) as i32, 26);
+            let state = r.varint()?;
+            if !(0..=u16::MAX as i32).contains(&state) {
+                return Err("invalid block state in block-change packet".into());
+            }
+            PlayPacket::BlockChange { x, y, z, state: state as u16 }
+        }
         0x21 => {
             let x = r.i32()?;
             let z = r.i32()?;
@@ -184,6 +230,36 @@ mod tests {
     }
 
     #[test]
+    fn decodes_single_block_change_at_negative_coordinates() {
+        let packed = (((-12_i64) & 0x3ff_ffff) << 38)
+            | ((70_i64 & 0xfff) << 26)
+            | ((-31_i64) & 0x3ff_ffff);
+        let mut p = vec![0x23];
+        p.extend_from_slice(&packed.to_be_bytes());
+        encode_varint((35 << 4) | 14, &mut p);
+        assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::BlockChange {
+            x: -12, y: 70, z: -31, state: (35 << 4) | 14,
+        });
+    }
+
+    #[test]
+    fn decodes_multi_block_change_records() {
+        let mut p = vec![0x22];
+        p.extend_from_slice(&(-2_i32).to_be_bytes());
+        p.extend_from_slice(&3_i32.to_be_bytes());
+        encode_varint(1, &mut p);
+        p.push(0xa5); // local x=10, z=5
+        p.push(64);
+        encode_varint((1 << 4) | 2, &mut p);
+        assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::MultiBlockChange {
+            chunk_x: -2,
+            chunk_z: 3,
+            changes: vec![BlockChange { x: -22, y: 64, z: 53, state: 18 }],
+        });
+    }
+
+    #[test]
+    fn rejects_truncated_known_packet() { assert!(decode_play_packet(&[0x06, 0, 0]).is_err()); }    #[test]
     fn rejects_truncated_known_packet() { assert!(decode_play_packet(&[0x06, 0, 0]).is_err()); }
 
     #[test]
