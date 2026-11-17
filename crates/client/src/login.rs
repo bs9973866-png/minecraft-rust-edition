@@ -6,7 +6,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
-use game::PlayerMovement;
+use game::{DigStatus, PlayerMovement, ServerAction};
 use protocol::{decode_play_packet, decode_varint, encode_varint, PlayPacket};
 
 const PROTOCOL_VERSION: i32 = 47;
@@ -25,6 +25,31 @@ pub struct PlayPacketSender {
     compression_threshold: Option<usize>,
 }
 
+fn encode_server_action(action: ServerAction) -> Result<Vec<u8>, String> {
+    match action {
+        ServerAction::DigBlock { position, face, status } => {
+            if !(0..=255).contains(&position.y) {
+                return Err("block Y coordinate is outside the 1.8.9 build height".into());
+            }
+            if face > 5 {
+                return Err("invalid block face for protocol-47 digging packet".into());
+            }
+            let packed = ((i64::from(position.x) & 0x03ff_ffff) << 38)
+                | ((i64::from(position.y) & 0x0fff) << 26)
+                | (i64::from(position.z) & 0x03ff_ffff);
+            let status = match status {
+                DigStatus::Start => 0,
+                DigStatus::Cancel => 1,
+                DigStatus::Finish => 2,
+            };
+            let mut packet = vec![0x07, status];
+            packet.extend_from_slice(&packed.to_be_bytes());
+            packet.push(face);
+            Ok(packet)
+        }
+    }
+}
+
 impl PlayPacketSender {
     fn send(&self, payload: &[u8]) -> Result<(), String> {
         let mut stream = self.stream.lock().map_err(|_| "packet writer lock poisoned")?;
@@ -40,6 +65,12 @@ impl PlayPacketSender {
         packet.extend_from_slice(&movement.yaw.to_be_bytes());
         packet.extend_from_slice(&movement.pitch.to_be_bytes());
         packet.push(u8::from(movement.on_ground));
+        self.send(&packet)
+    }
+
+    /// Send a protocol-47 block-digging action.
+    pub fn send_server_action(&self, action: ServerAction) -> Result<(), String> {
+        let packet = encode_server_action(action)?;
         self.send(&packet)
     }
 
@@ -354,6 +385,36 @@ mod tests {
         encode_varint(0, &mut frame);
         frame.extend_from_slice(&packet);
         assert!(decode_frame(&frame, Some(32)).is_err());
+    }
+
+    #[test]
+    fn encodes_protocol_47_block_digging_packet() {
+        let packet = encode_server_action(ServerAction::DigBlock {
+            position: game::BlockPos::new(-12, 70, -31),
+            face: 4,
+            status: DigStatus::Finish,
+        }).unwrap();
+        let packed = ((-12_i64 & 0x03ff_ffff) << 38)
+            | ((70_i64 & 0x0fff) << 26)
+            | (-31_i64 & 0x03ff_ffff);
+        let mut expected = vec![0x07, 2];
+        expected.extend_from_slice(&packed.to_be_bytes());
+        expected.push(4);
+        assert_eq!(packet, expected);
+    }
+
+    #[test]
+    fn rejects_invalid_dig_face_and_height() {
+        assert!(encode_server_action(ServerAction::DigBlock {
+            position: game::BlockPos::new(0, 64, 0),
+            face: 6,
+            status: DigStatus::Start,
+        }).is_err());
+        assert!(encode_server_action(ServerAction::DigBlock {
+            position: game::BlockPos::new(0, 256, 0),
+            face: 1,
+            status: DigStatus::Start,
+        }).is_err());
     }
 
     #[test]
