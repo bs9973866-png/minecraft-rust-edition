@@ -137,7 +137,7 @@ pub fn decode_chunk_column(
         let bytes = &data[start..start + 8192];
         let mut blocks = Vec::with_capacity(4096);
         for pair in bytes.chunks_exact(2) {
-            let block_id = u16::from(pair[0] >> 4) | (u16::from(pair[1] & 0x0f) << 4);
+            let block_id = u16::from(pair[0] >> 4) | (u16::from(pair[1]) << 4);
             let metadata = pair[0] & 0x0f;
             blocks.push(if block_id == 0 {
                 BlockState(0)
@@ -627,6 +627,18 @@ mod tests {
         assert_eq!(decoded.sections[0].blocks[1].block_id(), 35);
         assert_eq!(decoded.sections[0].blocks[1].metadata(), 14);
         assert_eq!(decoded.biomes.as_ref().unwrap()[0], 4);
+    }
+
+    #[test]
+    fn decodes_extended_12_bit_legacy_block_ids() {
+        // 0xABC5 = block ID 0xABC, metadata 5, serialized low byte first.
+        let mut data = vec![0_u8; 8192 + 2048];
+        data[0] = 0xC5;
+        data[1] = 0xAB;
+        let decoded = decode_chunk_column(0, 0, false, 1, &data, false).unwrap();
+        let state = decoded.sections[0].blocks[0];
+        assert_eq!(state.block_id(), 0xABC);
+        assert_eq!(state.metadata(), 5);
     }
 
     #[test]
