@@ -92,6 +92,7 @@ pub enum ServerEvent {
     InventorySlot { window_id: i8, slot: i16, item: Option<InventoryItem> },
     WindowItems { window_id: i8, items: Vec<Option<InventoryItem>> },
     HeldItemChange { slot: u8 },
+    Respawn { dimension: i32 },
     Teleport { position: [f32; 3], yaw: f32, pitch: f32 },
 }
 
@@ -240,6 +241,12 @@ pub struct World {
 
 impl World {
     pub fn new() -> Self { Self::default() }
+
+    /// Clear all loaded world chunks, for a server respawn/dimension change.
+    pub fn clear(&mut self) {
+        self.chunks.clear();
+        self.block_count = 0;
+    }
 
     fn chunk_and_local(pos: BlockPos) -> Option<(ChunkPos, usize, usize)> {
         if pos.y < 0 || pos.y >= CHUNK_HEIGHT as i32 { return None; }
@@ -708,6 +715,17 @@ mod tests {
         let empty_section = decode_chunk_column(1, 0, false, 1, &vec![0; 8192 + 2048 + 2048], true).unwrap();
         world.apply_chunk_column(&empty_section);
         assert!(world.is_empty());
+    }
+
+    #[test]
+    fn clearing_world_releases_all_chunk_storage() {
+        let mut world = World::new();
+        world.set_solid(BlockPos::new(-3, 12, 8));
+        world.set_solid(BlockPos::new(25, 40, 3));
+        assert_eq!(world.chunk_count(), 2);
+        world.clear();
+        assert!(world.is_empty());
+        assert_eq!(world.chunk_count(), 0);
     }
 
     #[test]
