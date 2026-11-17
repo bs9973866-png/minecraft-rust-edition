@@ -802,6 +802,12 @@ fn run_window_internal(
                                 for axis in 0..3 { entity.position[axis] += delta[axis]; }
                             }
                         }
+                        Ok(ServerEvent::EntityLook { entity_id, yaw, pitch }) => {
+                            if let Some(entity) = gpu.entities.get_mut(&entity_id) {
+                                entity.yaw = yaw;
+                                entity.pitch = pitch;
+                            }
+                        }
                         Ok(ServerEvent::EntityRemove(entity_ids)) => {
                             for entity_id in entity_ids { gpu.entities.remove(&entity_id); }
                         }
