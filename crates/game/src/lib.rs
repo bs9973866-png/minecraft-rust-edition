@@ -79,7 +79,16 @@ pub struct DecodedChunkColumn {
 pub enum ServerEvent {
     ChunkColumn(DecodedChunkColumn),
     BlockChanges(Vec<(BlockPos, BlockState)>),
-    Teleport([f32; 3]),
+    Teleport { position: [f32; 3], yaw: f32, pitch: f32 },
+}
+
+/// A movement update sent from the render thread to the protocol worker.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlayerMovement {
+    pub position: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+    pub on_ground: bool,
 }
 
 /// Decode the raw S21PacketChunkData data array for protocol 47.
