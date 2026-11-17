@@ -68,6 +68,15 @@ fn encode_server_action(action: ServerAction) -> Result<Vec<u8>, String> {
             packet.extend_from_slice(&cursor);
             Ok(packet)
         }
+        ServerAction::SelectHotbarSlot { slot } => {
+            if slot > 8 {
+                return Err("hotbar slot must be in 0..=8".into());
+            }
+            // C09 Held Item Change uses a signed short slot index.
+            let mut packet = vec![0x09];
+            packet.extend_from_slice(&i16::from(slot).to_be_bytes());
+            Ok(packet)
+        }
     }
 }
 
@@ -440,6 +449,19 @@ mod tests {
         expected.extend_from_slice(&(-1_i16).to_be_bytes());
         expected.extend_from_slice(&[8, 4, 15]);
         assert_eq!(packet, expected);
+    }
+
+    #[test]
+    fn encodes_protocol_47_held_item_change() {
+        assert_eq!(
+            encode_server_action(ServerAction::SelectHotbarSlot { slot: 7 }).unwrap(),
+            vec![0x09, 0x00, 0x07],
+        );
+    }
+
+    #[test]
+    fn rejects_invalid_server_hotbar_slot() {
+        assert!(encode_server_action(ServerAction::SelectHotbarSlot { slot: 9 }).is_err());
     }
 
     #[test]
