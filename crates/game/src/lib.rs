@@ -99,6 +99,7 @@ pub struct EntityState {
 pub enum ServerEvent {
     EntitySpawn(EntityState),
     EntityMove { entity_id: i32, delta: [f64; 3], on_ground: bool },
+    EntityLook { entity_id: i32, yaw: f32, pitch: f32 },
     EntityTeleport(EntityState),
     EntityRemove(Vec<i32>),
     ChunkColumn(DecodedChunkColumn),
