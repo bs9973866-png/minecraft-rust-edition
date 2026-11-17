@@ -109,10 +109,10 @@ fn decode_frame(frame: &[u8], compression_threshold: Option<usize>) -> Result<Ve
     if body.is_empty() || body.len() >= MAX_PACKET_BYTES {
         return Err("invalid compressed packet body length".into());
     }
-    if data_length as usize < threshold {
+    if (data_length as usize) < threshold {
         return Err("server compressed a packet smaller than the compression threshold".into());
     }
-    let mut decoder = ZlibDecoder::new(body);
+    let decoder = ZlibDecoder::new(body);
     let mut decoded = Vec::with_capacity(data_length as usize);
     decoder.take((MAX_PACKET_BYTES + 1) as u64).read_to_end(&mut decoded)
         .map_err(|e| format!("decompressing server packet: {e}"))?;
