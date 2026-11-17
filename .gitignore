@@ -1,7 +1,6 @@
 /target/
-.DS_Store
 *.log
-.idea/
+.DS_Store
+Thumbs.db
 .vscode/
-
-/dist/
+.idea/

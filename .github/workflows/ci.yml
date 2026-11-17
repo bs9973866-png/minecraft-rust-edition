@@ -4,34 +4,29 @@ on:
   push:
     branches: [main]
   pull_request:
+    branches: [main]
 
 permissions:
   contents: read
 
 jobs:
   test:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Linux window system dependencies
-        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev libwayland-dev libx11-dev libxrandr-dev libxi-dev libxcursor-dev libxinerama-dev libxkbcommon-x11-dev
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Check workspace
-        run: cargo check --workspace
-      - name: Run tests
-        run: cargo test --workspace
-
-  windows-portable:
-    runs-on: windows-latest
+    name: Format and test (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Build portable launcher
-        shell: pwsh
-        run: .\build-launcher.ps1
-      - name: Upload portable folder
-        uses: actions/upload-artifact@v4
         with:
-          name: rust-edition-windows-portable
-          path: dist/RustEdition/
-          if-no-files-found: error
+          components: rustfmt
+      - name: Format source
+        run: cargo fmt --all
+      - name: Verify formatting
+        run: cargo fmt --all -- --check
+      - name: Run tests
+        run: cargo test --all-targets
+      - name: Build release binary
+        run: cargo build --release

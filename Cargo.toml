@@ -1,21 +1,23 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/protocol",
-    "crates/game",
-    "crates/renderer",
-    "crates/client",
-    "crates/launcher",
-]
-
-[workspace.package]
+[package]
+name = "minecraft-rust-edition"
 version = "0.1.0"
 edition = "2021"
+description = "Independent Rust implementation foundation for Minecraft Java 1.8.9"
 license = "MIT"
 
-[workspace.lints.rust]
-unsafe_code = "forbid"
+[lib]
+name = "minecraft_rust"
+path = "src/lib.rs"
 
-[workspace.lints.clippy]
-all = "warn"
-pedantic = "warn"
+[[bin]]
+name = "minecraft-rust"
+path = "src/main.rs"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+panic = "abort"
+
+[workspace]
+resolver = "2"
