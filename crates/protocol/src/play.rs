@@ -18,8 +18,8 @@ pub enum PlayPacket {
     SetSlot { window_id: i8, slot: i16, item: Option<ItemStack> },
     WindowItems { window_id: i8, items: Vec<Option<ItemStack>> },
     HeldItemChange { slot: u8 },
-    SpawnPlayer { entity_id: i32, uuid: String, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, held_item: i16 },
-    SpawnMob { entity_id: i32, uuid: String, mob_type: u8, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, head_yaw: u8, velocity: [i16; 3] },
+    SpawnPlayer { entity_id: i32, uuid: String, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, held_item: i16, metadata: Vec<u8> },
+    SpawnMob { entity_id: i32, uuid: String, mob_type: u8, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, head_yaw: u8, velocity: [i16; 3], metadata: Vec<u8> },
     SpawnObject { entity_id: i32, object_type: u8, x: i32, y: i32, z: i32, pitch: u8, yaw: u8, data: i32, velocity: Option<[i16; 3]> },
     DestroyEntities { entity_ids: Vec<i32> },
     EntityRelativeMove { entity_id: i32, delta: [i8; 3], on_ground: bool },
@@ -130,6 +130,28 @@ impl<'a> Reader<'a> {
             self.skip_nbt_payload(tag, depth + 1)?;
         }
         Ok(())
+    }
+    fn metadata(&mut self) -> Result<Vec<u8>, String> {
+        let start = self.offset;
+        loop {
+            let header = self.u8()?;
+            if header == 0x7f { break; }
+            let kind = header >> 5;
+            match kind {
+                0 => { self.take(1)?; }
+                1 => { self.take(2)?; }
+                2 => { self.take(4)?; }
+                3 => { self.take(4)?; }
+                4 => { let _ = self.string()?; }
+                5 => { let _ = self.item_stack()?; }
+                6 => { self.take(8)?; }
+                _ => return Err("invalid entity metadata type".into()),
+            }
+            if self.offset - start > 65_536 {
+                return Err("entity metadata exceeds safety limit".into());
+            }
+        }
+        Ok(self.bytes[start..self.offset].to_vec())
     }
     fn item_stack(&mut self) -> Result<Option<ItemStack>, String> {
         let item_id = self.i16()?;
@@ -290,6 +312,7 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
             x: r.i32()?, y: r.i32()?, z: r.i32()?,
             yaw: r.u8()?, pitch: r.u8()?,
             held_item: r.i16()?,
+            metadata: r.metadata()?,
         },
         0x0f => PlayPacket::SpawnMob {
             entity_id: r.varint()?,
@@ -298,6 +321,7 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
             x: r.i32()?, y: r.i32()?, z: r.i32()?,
             yaw: r.u8()?, pitch: r.u8()?, head_yaw: r.u8()?,
             velocity: [r.i16()?, r.i16()?, r.i16()?],
+            metadata: r.metadata()?,
         },
         0x0e => {
             let entity_id = r.varint()?;
@@ -387,9 +411,10 @@ mod tests {
         p.extend_from_slice(&[32_i32.to_be_bytes(), 2048_i32.to_be_bytes(), (-96_i32).to_be_bytes()].concat());
         p.extend_from_slice(&[64, 128]);
         p.extend_from_slice(&276_i16.to_be_bytes());
+        p.push(0x7f);
         assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::SpawnPlayer {
             entity_id: 12, uuid: "0123456789abcdef0123456789abcdef".into(),
-            x: 32, y: 2048, z: -96, yaw: 64, pitch: 128, held_item: 276,
+            x: 32, y: 2048, z: -96, yaw: 64, pitch: 128, held_item: 276, metadata: vec![0x7f],
         });
     }
 
