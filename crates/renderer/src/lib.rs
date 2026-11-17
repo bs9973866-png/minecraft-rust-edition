@@ -554,7 +554,7 @@ fn run_window_internal(
         .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
     window.set_cursor_visible(false);
     if action_tx.is_some() {
-        eprintln!("Rust Edition server mode: WASD move, mouse look, left click to mine, right click to interact with blocks, Escape quit. Inventory-based block placement is not ready yet.");
+        eprintln!("Rust Edition server mode: WASD move, mouse look, left click to mine, right click to use/place the selected server item, Escape quit.");
     } else {
         eprintln!("Rust Edition: WASD move, mouse look, Space jump, left click break, right click place, Escape quit.");
     }
