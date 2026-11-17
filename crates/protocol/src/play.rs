@@ -419,6 +419,24 @@ mod tests {
     }
 
     #[test]
+    fn decodes_mob_spawn_and_metadata_terminator() {
+        let mut p = vec![0x0f];
+        encode_varint(5, &mut p);
+        encode_varint(36, &mut p);
+        p.extend_from_slice(b"fedcba9876543210fedcba9876543210");
+        p.push(54);
+        p.extend_from_slice(&[0_i32.to_be_bytes(), 64_i32.to_be_bytes(), 32_i32.to_be_bytes()].concat());
+        p.extend_from_slice(&[0, 0, 0]);
+        p.extend_from_slice(&[0_i16.to_be_bytes(), 0_i16.to_be_bytes(), 0_i16.to_be_bytes()].concat());
+        p.push(0x7f);
+        assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::SpawnMob {
+            entity_id: 5, uuid: "fedcba9876543210fedcba9876543210".into(),
+            mob_type: 54, x: 0, y: 64, z: 32, yaw: 0, pitch: 0, head_yaw: 0,
+            velocity: [0, 0, 0], metadata: vec![0x7f],
+        });
+    }
+
+    #[test]
     fn decodes_spawn_object_with_optional_velocity() {
         let mut p = vec![0x0e];
         encode_varint(300, &mut p);
