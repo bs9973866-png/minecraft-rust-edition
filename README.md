@@ -23,6 +23,22 @@ Early development — repository scaffold and architecture are being established
 - `crates/renderer` — GPU rendering and resource management.
 - `crates/client` — desktop application and orchestration.
 
+## Current milestone: server status ping
+
+The client now has a `--status` command that performs the Minecraft Handshake (protocol 47, next state Status), sends Status Request, reads the framed Status Response, and parses its JSON. This is a first real network-protocol milestone; it does **not** yet implement player login or gameplay.
+
+Example:
+
+```sh
+cargo run -p rust-edition-client -- --status play.example.net:25565
+```
+
+The port is optional and defaults to `25565`:
+
+```sh
+cargo run -p rust-edition-client -- --status localhost
+```
+
 ## Development
 
 Install a recent stable Rust toolchain, then run:
