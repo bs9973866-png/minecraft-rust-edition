@@ -78,6 +78,7 @@ pub struct DecodedChunkColumn {
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerEvent {
     ChunkColumn(DecodedChunkColumn),
+    BlockChanges(Vec<(BlockPos, BlockState)>),
     Teleport([f32; 3]),
 }
 
