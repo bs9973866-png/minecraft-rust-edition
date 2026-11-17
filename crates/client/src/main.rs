@@ -74,7 +74,7 @@ fn print_usage() {
     println!("  rust-edition --window        Open the local procedural-world window");
     println!("  rust-edition --status HOST[:PORT]  Query a Minecraft server status");
     println!("  rust-edition --login HOST[:PORT] --username NAME  Test offline-mode login");
-    println!("  rust-edition --play HOST[:PORT] --username NAME   Console protocol-47 Play session");
+    println!("  rust-edition --play HOST[:PORT] --username NAME   Play session with terminal chat input");
     println!("  rust-edition --join HOST[:PORT] --username NAME   Open a window and display server chunks");
 }
 
@@ -293,7 +293,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                             }
                         }
                         PlayPacket::ChatMessage { json, position } => {
-                            eprintln!("[CHAT:{position}] {json}");
+                            eprintln!("[CHAT:{position}] {}", plain_chat_text(&json));
                         }
                         PlayPacket::Unknown { id, payload } => {
                             eprintln!(
@@ -323,6 +323,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             .recv()
             .map_err(|_| "server connection ended before the game window could open")?;
         println!("Opening server world window for {username} at {host}:{port}.");
+        println!("Chat input is available in this terminal: type a message or /command and press Enter.");
+        start_console_chat(packet_sender.clone())?;
         println!("Server chunks and block updates are rendered; WASD movement, hotbar selection, mining, and held-item block interactions and placement are sent to the server.");
         let render_result =
             renderer::run_window_with_server_events(&username, event_rx, movement_tx, action_tx);
