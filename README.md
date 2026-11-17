@@ -16,12 +16,13 @@ Early playable prototype — the native window, deterministic procedural terrain
 - Load user-provided resource packs and supported 1.8.9 assets.
 - Keep gameplay behavior and packet handling testable and deterministic.
 
-## Planned workspace
+## Workspace
 
 - `crates/protocol` — packet framing, VarInts, protocol states, codecs.
 - `crates/game` — world, chunks, entities, input, and gameplay model.
 - `crates/renderer` — GPU rendering and resource management.
-- `crates/client` — desktop application and orchestration.
+- `crates/client` — game client executable.
+- `crates/launcher` — small desktop launcher with a saved offline nickname.
 
 ## Current milestone: procedural terrain and per-chunk GPU meshes
 
@@ -40,11 +41,27 @@ Controls in `--window` mode:
 
 The game crate now includes a nine-slot hotbar data model with selection, wraparound scrolling, and slot state IDs. The renderer draws a crosshair and a nine-slot HUD overlay (temporary placeholder icons, not Minecraft item textures). The game crate also includes a basic player AABB, gravity, jumping, and axis-separated block collision. The renderer starts the player above the generated terrain and uses Space to jump. This is still an early physics prototype: it does not yet include Minecraft's exact movement constants, step-up behavior, swimming, ladders, sprinting, or multiplayer prediction. The renderer now creates a separate GPU vertex buffer for each loaded chunk. Editing a block rebuilds only its owning chunk mesh and the directly adjacent chunk mesh when the edit touches a chunk boundary. Mesh generation enumerates only blocks stored in the target chunk, while face visibility still checks neighboring world blocks. The terrain generator is a small original prototype, not Minecraft's vanilla 1.8.9 generator. It does not yet load real server chunk packets, biomes, texture atlases, caves, ores, water, or the complete vanilla block palette.
 
-Run it with:
+## Simple launcher
+
+The launcher is intentionally minimal: enter an offline nickname and press **Play**. It saves the nickname locally and starts the game executable with `--window --username <nickname>`. No Microsoft or Ely.by login is involved.
+
+Build both Windows executables from the repository root:
+
+```powershell
+cargo build --release -p rust-edition-client -p rust-edition-launcher
+```
+
+Then keep `target/release/rust-edition-launcher.exe` and `target/release/rust-edition.exe` in the same folder. Start `rust-edition-launcher.exe`.
+
+The launcher stores its nickname in `%APPDATA%/RustEdition/launcher.json`. Offline names must be 3–16 characters and contain only Latin letters, numbers, and underscores.
+
+You can still run the game directly during development:
 
 ```sh
 cargo run -p rust-edition-client -- --window
 ```
+
+The offline nickname is currently passed to the client process and logged at startup. It is not yet a multiplayer identity: server login and multiplayer are not implemented.
 
 The window uses the platform's available graphics backend. A compatible GPU/driver and desktop session are required.
 
