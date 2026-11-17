@@ -1,15 +1,15 @@
 //! Window and GPU rendering backend for Rust Edition.
 //! Draws a generated voxel test world with a movable first-person-style camera.
 
-use std::sync::Arc;
+use std::{collections::HashSet, sync::Arc, time::Instant};
 use game::World;
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
-    event::{ElementState, Event, MouseButton, WindowEvent},
+    event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
-    window::WindowBuilder,
+    window::{CursorGrabMode, WindowBuilder},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -70,22 +70,26 @@ impl Camera {
         CameraUniform { view_projection: (projection * view).to_cols_array_2d() }
     }
 
-    fn key(&mut self, key: KeyCode) {
+    fn look(&mut self, delta_x: f64, delta_y: f64) {
+        let sensitivity = 0.0025;
+        self.yaw -= delta_x as f32 * sensitivity;
+        self.pitch = (self.pitch - delta_y as f32 * sensitivity).clamp(-1.54, 1.54);
+    }
+
+    fn update_movement(&mut self, dt: f32, keys: &HashSet<KeyCode>) {
         let forward = Vec3::new(self.yaw.cos(), 0.0, self.yaw.sin()).normalize();
         let right = Vec3::new(-forward.z, 0.0, forward.x);
-        let step = 0.65;
-        match key {
-            KeyCode::KeyW => self.position += forward * step,
-            KeyCode::KeyS => self.position -= forward * step,
-            KeyCode::KeyA => self.position -= right * step,
-            KeyCode::KeyD => self.position += right * step,
-            KeyCode::Space => self.position.y += step,
-            KeyCode::ShiftLeft | KeyCode::ShiftRight => self.position.y -= step,
-            KeyCode::ArrowLeft => self.yaw -= 0.12,
-            KeyCode::ArrowRight => self.yaw += 0.12,
-            KeyCode::ArrowUp => self.pitch = (self.pitch + 0.08).clamp(-1.45, 1.45),
-            KeyCode::ArrowDown => self.pitch = (self.pitch - 0.08).clamp(-1.45, 1.45),
-            _ => {}
+        let mut movement = Vec3::ZERO;
+        if keys.contains(&KeyCode::KeyW) { movement += forward; }
+        if keys.contains(&KeyCode::KeyS) { movement -= forward; }
+        if keys.contains(&KeyCode::KeyD) { movement += right; }
+        if keys.contains(&KeyCode::KeyA) { movement -= right; }
+        if movement.length_squared() > 0.0 {
+            self.position += movement.normalize() * (5.0 * dt);
+        }
+        if keys.contains(&KeyCode::Space) { self.position.y += 5.0 * dt; }
+        if keys.contains(&KeyCode::ShiftLeft) || keys.contains(&KeyCode::ShiftRight) {
+            self.position.y -= 5.0 * dt;
         }
     }
 }
@@ -327,35 +331,58 @@ impl GpuState {
 
 use wgpu::util::DeviceExt;
 
-/// Opens the client window. WASD moves the camera; arrows rotate it; Space/Shift move vertically; mouse buttons edit blocks.
+/// Opens the client window with continuous first-person movement and mouse look.
 pub fn run_window() -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("creating event loop: {e}"))?;
     let window = Arc::new(WindowBuilder::new()
-        .with_title("Minecraft 1.8.9 — Rust Edition | WASD move, arrows look")
+        .with_title("Minecraft 1.8.9 — Rust Edition | WASD + mouse")
         .with_inner_size(PhysicalSize::new(1280, 720))
         .build(&event_loop).map_err(|e| format!("creating window: {e}"))?);
     let mut gpu = pollster::block_on(GpuState::new(window.clone()))?;
-    eprintln!("Rust Edition voxel renderer initialized. WASD: move, arrows: look, Space/Shift: up/down, left click: break, right click: place.");
+    let _ = window.set_cursor_grab(CursorGrabMode::Locked)
+        .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
+    window.set_cursor_visible(false);
+    eprintln!("Rust Edition: WASD move, mouse look, Space/Shift fly, left click break, right click place, Escape quit.");
 
-    event_loop.set_control_flow(ControlFlow::Wait);
+    let mut pressed_keys = HashSet::new();
+    let mut last_frame = Instant::now();
+    event_loop.set_control_flow(ControlFlow::Poll);
     window.request_redraw();
     let result = event_loop.run(move |event, target| match event {
+        Event::DeviceEvent { event: DeviceEvent::MouseMotion { delta }, .. } => {
+            gpu.camera.look(delta.0, delta.1);
+            gpu.update_camera();
+        }
         Event::WindowEvent { window_id, event } if window_id == window.id() => match event {
             WindowEvent::CloseRequested => target.exit(),
-            WindowEvent::Resized(size) => { gpu.resize(size); window.request_redraw(); }
-            WindowEvent::ScaleFactorChanged { .. } => { gpu.resize(window.inner_size()); window.request_redraw(); }
+            WindowEvent::Resized(size) => gpu.resize(size),
+            WindowEvent::ScaleFactorChanged { .. } => gpu.resize(window.inner_size()),
+            WindowEvent::Focused(false) => {
+                pressed_keys.clear();
+                let _ = window.set_cursor_grab(CursorGrabMode::None);
+                window.set_cursor_visible(true);
+            }
+            WindowEvent::Focused(true) => {
+                let _ = window.set_cursor_grab(CursorGrabMode::Locked)
+                    .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
+                window.set_cursor_visible(false);
+            }
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
                 match button {
                     MouseButton::Left => gpu.interact(false),
                     MouseButton::Right => gpu.interact(true),
                     _ => {}
                 }
-                window.request_redraw();
             }
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed && !event.repeat => {
+            WindowEvent::KeyboardInput { event, .. } => {
                 if let PhysicalKey::Code(key) = event.physical_key {
-                    if key == KeyCode::Escape { target.exit(); }
-                    else { gpu.camera.key(key); gpu.update_camera(); window.request_redraw(); }
+                    if key == KeyCode::Escape && event.state == ElementState::Pressed {
+                        target.exit();
+                    } else if event.state == ElementState::Pressed {
+                        pressed_keys.insert(key);
+                    } else {
+                        pressed_keys.remove(&key);
+                    }
                 }
             }
             WindowEvent::RedrawRequested => match gpu.render() {
@@ -366,6 +393,14 @@ pub fn run_window() -> Result<(), String> {
             },
             _ => {}
         },
+        Event::AboutToWait => {
+            let now = Instant::now();
+            let dt = (now - last_frame).as_secs_f32().min(0.05);
+            last_frame = now;
+            gpu.camera.update_movement(dt, &pressed_keys);
+            gpu.update_camera();
+            window.request_redraw();
+        }
         _ => {}
     });
     result.map_err(|e| format!("event loop failed: {e}"))
