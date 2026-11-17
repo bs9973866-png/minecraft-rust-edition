@@ -47,7 +47,7 @@ fn encode_server_action(action: ServerAction) -> Result<Vec<u8>, String> {
             packet.push(face);
             Ok(packet)
         }
-        ServerAction::UseBlock { position, face, cursor } => {
+        ServerAction::UseBlock { position, face, cursor, held_item } => {
             if !(0..=255).contains(&position.y) {
                 return Err("block Y coordinate is outside the 1.8.9 build height".into());
             }
@@ -60,11 +60,24 @@ fn encode_server_action(action: ServerAction) -> Result<Vec<u8>, String> {
             let packed = ((i64::from(position.x) & 0x03ff_ffff) << 38)
                 | ((i64::from(position.y) & 0x0fff) << 26)
                 | (i64::from(position.z) & 0x03ff_ffff);
-            // C08 Player Block Placement. Item ID -1 means an empty hand.
+            // C08 Player Block Placement. Echo the selected server inventory stack.
             let mut packet = vec![0x08];
             packet.extend_from_slice(&packed.to_be_bytes());
             packet.push(face);
-            packet.extend_from_slice(&(-1_i16).to_be_bytes());
+            if let Some(item) = held_item {
+                if item.item_id < 0 || item.nbt.len() > MAX_PACKET_BYTES {
+                    return Err("invalid held item data for protocol-47 placement packet".into());
+                }
+                if item.nbt.is_empty() || (item.nbt[0] != 0 && item.nbt[0] != 10) {
+                    return Err("held item NBT must be empty or a root compound".into());
+                }
+                packet.extend_from_slice(&item.item_id.to_be_bytes());
+                packet.push(item.count as u8);
+                packet.extend_from_slice(&item.damage.to_be_bytes());
+                packet.extend_from_slice(&item.nbt);
+            } else {
+                packet.extend_from_slice(&(-1_i16).to_be_bytes());
+            }
             packet.extend_from_slice(&cursor);
             Ok(packet)
         }
@@ -439,6 +452,7 @@ mod tests {
             position: game::BlockPos::new(-12, 70, -31),
             face: 1,
             cursor: [8, 4, 15],
+            held_item: None,
         }).unwrap();
         let packed = ((-12_i64 & 0x03ff_ffff) << 38)
             | ((70_i64 & 0x0fff) << 26)
@@ -449,6 +463,19 @@ mod tests {
         expected.extend_from_slice(&(-1_i16).to_be_bytes());
         expected.extend_from_slice(&[8, 4, 15]);
         assert_eq!(packet, expected);
+    }
+
+    #[test]
+    fn encodes_held_item_stack_in_block_placement_packet() {
+        let packet = encode_server_action(ServerAction::UseBlock {
+            position: game::BlockPos::new(1, 64, 2),
+            face: 1,
+            cursor: [8, 8, 8],
+            held_item: Some(game::InventoryItem {
+                item_id: 5, count: 3, damage: 2, nbt: vec![0],
+            }),
+        }).unwrap();
+        assert_eq!(&packet[9..], &[1, 0, 5, 3, 0, 2, 0, 8, 8, 8]);
     }
 
     #[test]
@@ -468,13 +495,13 @@ mod tests {
     fn rejects_invalid_block_interaction_face_cursor_and_height() {
         let invalid = [
             ServerAction::UseBlock {
-                position: game::BlockPos::new(0, 64, 0), face: 6, cursor: [8, 8, 8],
+                position: game::BlockPos::new(0, 64, 0), face: 6, cursor: [8, 8, 8], held_item: None,
             },
             ServerAction::UseBlock {
-                position: game::BlockPos::new(0, 256, 0), face: 1, cursor: [8, 8, 8],
+                position: game::BlockPos::new(0, 256, 0), face: 1, cursor: [8, 8, 8], held_item: None,
             },
             ServerAction::UseBlock {
-                position: game::BlockPos::new(0, 64, 0), face: 1, cursor: [8, 16, 8],
+                position: game::BlockPos::new(0, 64, 0), face: 1, cursor: [8, 16, 8], held_item: None,
             },
         ];
         for action in invalid {
