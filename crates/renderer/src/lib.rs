@@ -2,7 +2,7 @@
 //! Draws a seed-generated voxel landscape with a movable first-person-style camera.
 
 use std::{collections::{HashMap, HashSet}, sync::{Arc, mpsc::{Receiver, Sender, TryRecvError}}, time::{Duration, Instant}};
-use game::{BlockPos, ChunkPos, Hotbar, PlayerMovement, PlayerPhysics, ServerEvent, World, CHUNK_WIDTH};
+use game::{BlockPos, ChunkPos, DigStatus, Hotbar, PlayerMovement, PlayerPhysics, ServerAction, ServerEvent, World, CHUNK_WIDTH};
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
@@ -198,6 +198,18 @@ struct GpuState {
     overlay_vertex_count: u32,
     hotbar: Hotbar,
     world: World,
+}
+
+fn protocol_face_from_normal(normal: [i32; 3]) -> u8 {
+    match normal {
+        [0, -1, 0] => 0,
+        [0, 1, 0] => 1,
+        [0, 0, -1] => 2,
+        [0, 0, 1] => 3,
+        [-1, 0, 0] => 4,
+        [1, 0, 0] => 5,
+        _ => 0,
+    }
 }
 
 fn push_quad(out: &mut Vec<Vertex>, points: [[f32; 3]; 4], color: [f32; 3]) {
@@ -510,7 +522,7 @@ pub fn run_window() -> Result<(), String> {
 
 /// Opens the game window and shows the selected offline profile in its title.
 pub fn run_window_with_username(username: &str) -> Result<(), String> {
-    run_window_internal(username, None, None)
+    run_window_internal(username, None, None, None)
 }
 
 /// Opens a server-backed window. Incoming chunk/teleport events are applied on the render thread.
@@ -518,14 +530,16 @@ pub fn run_window_with_server_events(
     username: &str,
     events: Receiver<ServerEvent>,
     movement_tx: Sender<PlayerMovement>,
+    action_tx: Sender<ServerAction>,
 ) -> Result<(), String> {
-    run_window_internal(username, Some(events), Some(movement_tx))
+    run_window_internal(username, Some(events), Some(movement_tx), Some(action_tx))
 }
 
 fn run_window_internal(
     username: &str,
     mut server_events: Option<Receiver<ServerEvent>>,
     mut movement_tx: Option<Sender<PlayerMovement>>,
+    mut action_tx: Option<Sender<ServerAction>>,
 ) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("creating event loop: {e}"))?;
     let title = format!("Minecraft 1.8.9 — Rust Edition | {username} | WASD + mouse");
@@ -544,6 +558,7 @@ fn run_window_internal(
     let mut last_frame = Instant::now();
     let mut last_server_movement = Instant::now();
     let mut server_position_known = server_events.is_none();
+    let mut active_dig: Option<(BlockPos, u8, Instant)> = None;
     event_loop.set_control_flow(ControlFlow::Poll);
     window.request_redraw();
     let result = event_loop.run(move |event, target| match event {
@@ -558,6 +573,13 @@ fn run_window_internal(
             WindowEvent::Focused(false) => {
                 pressed_keys.clear();
                 jump_requested = false;
+                if let Some((position, face, _)) = active_dig.take() {
+                    if let Some(sender) = action_tx.as_ref() {
+                        let _ = sender.send(ServerAction::DigBlock {
+                            position, face, status: DigStatus::Cancel,
+                        });
+                    }
+                }
                 let _ = window.set_cursor_grab(CursorGrabMode::None);
                 window.set_cursor_visible(true);
             }
@@ -576,10 +598,45 @@ fn run_window_internal(
                     gpu.refresh_overlay();
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
-                match button {
-                    MouseButton::Left => gpu.interact(false),
-                    MouseButton::Right => gpu.interact(true),
+            WindowEvent::MouseInput { state, button, .. } => {
+                match (button, state) {
+                    (MouseButton::Left, ElementState::Pressed) => {
+                        if let Some(sender) = action_tx.as_ref() {
+                            let origin = gpu.camera.position.to_array();
+                            let direction = gpu.camera.forward().to_array();
+                            if let Some(hit) = gpu.world.raycast(origin, direction, 6.0) {
+                                let face = protocol_face_from_normal(hit.face);
+                                if sender.send(ServerAction::DigBlock {
+                                    position: hit.block,
+                                    face,
+                                    status: DigStatus::Start,
+                                }).is_ok() {
+                                    active_dig = Some((hit.block, face, Instant::now()));
+                                }
+                            }
+                        } else {
+                            gpu.interact(false);
+                        }
+                    }
+                    (MouseButton::Left, ElementState::Released) => {
+                        if let Some((position, face, started)) = active_dig.take() {
+                            if let Some(sender) = action_tx.as_ref() {
+                                let status = if started.elapsed() >= Duration::from_millis(1500) {
+                                    DigStatus::Finish
+                                } else {
+                                    DigStatus::Cancel
+                                };
+                                let _ = sender.send(ServerAction::DigBlock { position, face, status });
+                            }
+                        }
+                    }
+                    (MouseButton::Right, ElementState::Pressed) => {
+                        // Server placement needs a synchronized selected inventory slot;
+                        // never mutate a server-backed world locally.
+                        if action_tx.is_none() {
+                            gpu.interact(true);
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -644,6 +701,16 @@ fn run_window_internal(
                 }
             }
             let now = Instant::now();
+            if let Some((position, face, started)) = active_dig {
+                if now.duration_since(started) >= Duration::from_millis(1500) {
+                    if let Some(sender) = action_tx.as_ref() {
+                        let _ = sender.send(ServerAction::DigBlock {
+                            position, face, status: DigStatus::Finish,
+                        });
+                    }
+                    active_dig = None;
+                }
+            }
             let dt = (now - last_frame).as_secs_f32().min(0.05);
             last_frame = now;
             gpu.camera.update_movement(&gpu.world, dt, &pressed_keys, jump_requested);
