@@ -1274,6 +1274,44 @@ mod tests {
         server.join().unwrap();
     }
     #[test]
+    fn play_world_pump_applies_server_chunk_data() {
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let join = {
+            let mut payload = Vec::new();
+            payload.extend_from_slice(&77_i32.to_be_bytes());
+            payload.extend_from_slice(&[1, 0, 2, 20]);
+            write_string("default", &mut payload);
+            payload.push(0);
+            encode_packet(0x01, &payload)
+        };
+        let chunk = encode_packet(0x21, &make_chunk_payload(true, 1 << 2, true));
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.write_all(&join).unwrap();
+            socket.write_all(&chunk).unwrap();
+        });
+        let socket = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut play = PlaySession {
+            identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
+            stream: PacketStream::new(socket),
+            entity_id: 0,
+            dimension: None,
+        };
+        let mut world = World::new();
+        assert!(matches!(play.read_world_event(&mut world).unwrap(), PlayEvent::JoinGame(_)));
+        let event = play.read_world_event(&mut world).unwrap();
+        assert!(matches!(event, PlayEvent::Chunk(_)));
+        assert_eq!(world.chunk_count(), 1);
+        assert_eq!(world.get_block(BlockPos::new(-45, 33, 114)), BlockState(0x1234));
+        server.join().unwrap();
+    }
+    #[test]
     fn parses_host_ports() {
         assert_eq!(parse_host_port("play.example.net:25565").unwrap(), ("play.example.net".into(), 25565));
         assert_eq!(parse_host_port("[::1]:25566").unwrap(), ("::1".into(), 25566));
