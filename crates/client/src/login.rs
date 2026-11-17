@@ -134,6 +134,11 @@ impl PlaySession {
         send_packet(&mut self.stream, &packet, self.compression_threshold)
     }
 
+    /// Current authoritative position after the latest server correction.
+    pub fn position(&self) -> [f64; 3] {
+        self.position
+    }
+
     /// Read and decode the next serverbound-independent Play packet.
     pub fn read_play_packet(&mut self) -> Result<PlayPacket, String> {
         let frame = read_frame(&mut self.stream)?;
