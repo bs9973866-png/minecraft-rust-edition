@@ -6,7 +6,7 @@ A clean-room Rust reimplementation project targeting compatibility with Minecraf
 
 ## Project status
 
-Early development — repository scaffold and architecture are being established. No playable client or server compatibility is available yet.
+Early playable prototype — the native window, generated voxel test world, first-person movement, basic collision, hotbar HUD, server status ping, sparse chunk storage, and per-chunk GPU meshes are implemented. This is not yet a complete playable Minecraft client and cannot join multiplayer servers.
 
 ## Goals
 
@@ -25,7 +25,7 @@ Early development — repository scaffold and architecture are being established
 
 ## Current milestone: chunk-backed world and per-chunk GPU meshes
 
-The game crate now stores world blocks in sparse 16×256×16 chunks (the classic 1.8.9 vertical build range). Chunks are created only when a non-air block is written and reclaimed when emptied. World coordinates map correctly across positive and negative chunk boundaries, and block states are stored per cell. The world model supports block lookup, adding/removing blocks, iteration, and voxel DDA raycasting. The renderer builds visible cube faces from that world and updates its GPU vertex buffer after edits. First-person controls now use continuous time-based movement while keys are held, and relative mouse motion rotates the camera with a captured cursor.
+The game crate now stores world blocks in sparse 16×256×16 chunks (the classic 1.8.9 vertical build range). Chunks are created only when a non-air block is written and reclaimed when emptied. World coordinates map correctly across positive and negative chunk boundaries, and block states are stored per cell. The world model supports block lookup, adding/removing blocks, iteration, and voxel DDA raycasting. The renderer builds visible cube faces and keeps a separate GPU vertex buffer for each chunk. First-person controls now use continuous time-based movement while keys are held, and relative mouse motion rotates the camera with a captured cursor.
 
 Controls in `--window` mode:
 
@@ -75,4 +75,4 @@ cargo test --workspace
 
 ## Compatibility note
 
-The initial milestone is a protocol test harness and a native window. Full gameplay, authentication, rendering parity, and broad server compatibility will be implemented incrementally and verified against real 1.8.9 servers.
+This project is an early prototype. Full gameplay, authentication, real server chunk decoding, rendering parity, and broad server compatibility remain unimplemented and must be verified against real 1.8.9 servers.
