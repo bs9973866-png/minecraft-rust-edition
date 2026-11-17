@@ -1,4 +1,5 @@
-mod status;\nmod login;
+mod status;
+mod login;
 
 use game::ChunkPos;
 use protocol::encode_varint;
@@ -8,7 +9,8 @@ fn print_usage() {
     println!("Usage:");
     println!("  rust-edition                 Show client foundation info");
     println!("  rust-edition --window        Open the GPU-rendered client window");
-    println!("  rust-edition --status HOST[:PORT]  Query a Minecraft server status");\n    println!("  rust-edition --login HOST[:PORT] --username NAME  Test offline-mode login");
+    println!("  rust-edition --status HOST[:PORT]  Query a Minecraft server status");
+    println!("  rust-edition --login HOST[:PORT] --username NAME  Test offline-mode login");
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
