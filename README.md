@@ -51,7 +51,7 @@ To build a portable Windows folder automatically, run `build-launcher.ps1` from 
 .\\build-launcher.ps1
 ```
 
-The script builds both release executables and copies them into `dist/RustEdition`. Start `rust-edition-launcher.exe` there; keep `rust-edition.exe` beside it. You can also build manually with `cargo build --release -p rust-edition-client -p rust-edition-launcher`.
+The script builds both release executables and copies them into `dist/RustEdition`. Start `rust-edition-launcher.exe` there; keep `rust-edition.exe` beside it. After a successful launch, the launcher closes automatically. You can also press Enter in the nickname field to launch. GitHub Actions now builds a Windows portable artifact on pushes to `main`. You can also build manually with `cargo build --release -p rust-edition-client -p rust-edition-launcher`.
 
 The launcher stores its nickname in `%APPDATA%/RustEdition/launcher.json`. Offline names must be 3–16 characters and contain only Latin letters, numbers, and underscores.
 
