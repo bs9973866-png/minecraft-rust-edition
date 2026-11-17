@@ -44,6 +44,12 @@ impl<'a> Reader<'a> {
     fn i8(&mut self) -> Result<i8, String> { Ok(self.u8()? as i8) }
     fn bool(&mut self) -> Result<bool, String> { match self.u8()? { 0 => Ok(false), 1 => Ok(true), _ => Err("invalid boolean in play packet".into()) } }
     fn i32(&mut self) -> Result<i32, String> { Ok(i32::from_be_bytes(self.take(4)?.try_into().unwrap())) }
+    fn varint(&mut self) -> Result<i32, String> {
+        let (value, used) = decode_varint(self.bytes.get(self.offset..).ok_or("missing VarInt")?)
+            .map_err(|e| e.to_string())?;
+        self.offset += used;
+        Ok(value)
+    }
     fn i64(&mut self) -> Result<i64, String> { Ok(i64::from_be_bytes(self.take(8)?.try_into().unwrap())) }
     fn f32(&mut self) -> Result<f32, String> { Ok(f32::from_bits(u32::from_be_bytes(self.take(4)?.try_into().unwrap()))) }
     fn f64(&mut self) -> Result<f64, String> { Ok(f64::from_bits(u64::from_be_bytes(self.take(8)?.try_into().unwrap()))) }
@@ -77,7 +83,7 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
     let (id, id_len) = decode_varint(payload).map_err(|e: CodecError| e.to_string())?;
     let mut r = Reader::new(payload.get(id_len..).ok_or("missing play packet body")?);
     let packet = match id {
-        0x00 => PlayPacket::KeepAlive { id: r.i32()? },
+        0x00 => PlayPacket::KeepAlive { id: r.varint()? },
         0x01 => {
             let entity_id = r.i32()?;
             let game_mode_raw = r.u8()?;
@@ -130,7 +136,7 @@ mod tests {
     use crate::encode_varint;
 
     #[test]
-    fn decodes_join_game_and_hardcore_flag() {
+    fn decodes_keep_alive_varint() {\n        let mut p = vec![0x00];\n        encode_varint(300, &mut p);\n        assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::KeepAlive { id: 300 });\n    }\n\n    #[test]\n    fn decodes_join_game_and_hardcore_flag() {
         let mut p = vec![0x01];
         p.extend_from_slice(&7_i32.to_be_bytes());
         p.push(0x0a); // hardcore + creative
