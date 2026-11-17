@@ -1,7 +1,5 @@
 //! Platform-independent world model for the Minecraft 1.8.9 client.
 
-use std::collections::HashSet;
-
 /// Horizontal chunk coordinate pair.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ChunkPos { pub x: i32, pub z: i32 }
