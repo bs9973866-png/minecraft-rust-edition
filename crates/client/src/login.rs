@@ -142,7 +142,7 @@ pub fn login_offline(host: &str, port: u16, username: &str) -> Result<LoginSucce
             }
             0x01 => return Err("server requires Microsoft/Mojang online-mode authentication; this prototype supports offline-mode servers only".into()),
             0x03 => {
-                let (threshold, used) = decode_varint(packet.get(id_len..).ok_or("missing compression threshold")?)
+                let (threshold, _used) = decode_varint(packet.get(id_len..).ok_or("missing compression threshold")?)
                     .map_err(|e| e.to_string())?;
                 if threshold < 0 || threshold as usize > MAX_PACKET_BYTES {
                     return Err(format!("server supplied invalid compression threshold: {threshold}"));
