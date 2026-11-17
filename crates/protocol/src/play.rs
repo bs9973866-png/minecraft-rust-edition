@@ -18,6 +18,10 @@ pub enum PlayPacket {
     SetSlot { window_id: i8, slot: i16, item: Option<ItemStack> },
     WindowItems { window_id: i8, items: Vec<Option<ItemStack>> },
     HeldItemChange { slot: u8 },
+    SpawnObject { entity_id: i32, object_type: u8, x: i32, y: i32, z: i32, pitch: u8, yaw: u8, data: i32, velocity: Option<[i16; 3]> },
+    DestroyEntities { entity_ids: Vec<i32> },
+    EntityRelativeMove { entity_id: i32, delta: [i8; 3], on_ground: bool },
+    EntityTeleport { entity_id: i32, x: i32, y: i32, z: i32, yaw: u8, pitch: u8, on_ground: bool },
     KeepAlive { id: i32 },
     Unknown { id: i32, payload: Vec<u8> },
 }
@@ -278,6 +282,47 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
             if !(0..=8).contains(&slot) { return Err("invalid held hotbar slot".into()); }
             PlayPacket::HeldItemChange { slot: slot as u8 }
         }
+        0x0e => {
+            let entity_id = r.varint()?;
+            let object_type = r.u8()?;
+            let x = r.i32()?;
+            let y = r.i32()?;
+            let z = r.i32()?;
+            let pitch = r.u8()?;
+            let yaw = r.u8()?;
+            let data = r.i32()?;
+            let velocity = if data > 0 {
+                Some([r.i16()?, r.i16()?, r.i16()?])
+            } else {
+                None
+            };
+            PlayPacket::SpawnObject { entity_id, object_type, x, y, z, pitch, yaw, data, velocity }
+        }
+        0x13 => {
+            let count = r.varint()?;
+            if !(0..=4096).contains(&count) {
+                return Err("invalid destroy-entities count".into());
+            }
+            let mut entity_ids = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                entity_ids.push(r.varint()?);
+            }
+            PlayPacket::DestroyEntities { entity_ids }
+        }
+        0x15 => PlayPacket::EntityRelativeMove {
+            entity_id: r.varint()?,
+            delta: [r.i8()?, r.i8()?, r.i8()?],
+            on_ground: r.bool()?,
+        },
+        0x18 => PlayPacket::EntityTeleport {
+            entity_id: r.varint()?,
+            x: r.i32()?,
+            y: r.i32()?,
+            z: r.i32()?,
+            yaw: r.u8()?,
+            pitch: r.u8()?,
+            on_ground: r.bool()?,
+        },
         0x23 => {
             let packed = r.i64()?;
             let x = sign_extend((packed >> 38) as i32, 26);
@@ -315,6 +360,51 @@ fn sign_extend(value: i32, bits: u32) -> i32 {
 mod tests {
     use super::*;
     use crate::encode_varint;
+
+    #[test]
+    fn decodes_spawn_object_with_optional_velocity() {
+        let mut p = vec![0x0e];
+        encode_varint(300, &mut p);
+        p.push(2);
+        p.extend_from_slice(&(-32_i32).to_be_bytes());
+        p.extend_from_slice(&64_i32.to_be_bytes());
+        p.extend_from_slice(&128_i32.to_be_bytes());
+        p.extend_from_slice(&[10, 20]);
+        p.extend_from_slice(&1_i32.to_be_bytes());
+        p.extend_from_slice(&[1_i16.to_be_bytes(), (-2_i16).to_be_bytes(), 3_i16.to_be_bytes()].concat());
+        assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::SpawnObject {
+            entity_id: 300, object_type: 2, x: -32, y: 64, z: 128,
+            pitch: 10, yaw: 20, data: 1, velocity: Some([1, -2, 3]),
+        });
+    }
+
+    #[test]
+    fn decodes_entity_removal_and_relative_motion() {
+        let mut destroy = vec![0x13];
+        encode_varint(2, &mut destroy);
+        encode_varint(7, &mut destroy);
+        encode_varint(300, &mut destroy);
+        assert_eq!(decode_play_packet(&destroy).unwrap(),
+            PlayPacket::DestroyEntities { entity_ids: vec![7, 300] });
+
+        let mut movement = vec![0x15];
+        encode_varint(7, &mut movement);
+        movement.extend_from_slice(&[-1_i8, 2_i8, 3_i8].map(|v| v as u8));
+        movement.push(1);
+        assert_eq!(decode_play_packet(&movement).unwrap(),
+            PlayPacket::EntityRelativeMove { entity_id: 7, delta: [-1, 2, 3], on_ground: true });
+    }
+
+    #[test]
+    fn decodes_entity_teleport_fixed_point_coordinates() {
+        let mut p = vec![0x18];
+        encode_varint(42, &mut p);
+        p.extend_from_slice(&[32_i32.to_be_bytes(), 1024_i32.to_be_bytes(), (-64_i32).to_be_bytes()].concat());
+        p.extend_from_slice(&[90, 45, 1]);
+        assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::EntityTeleport {
+            entity_id: 42, x: 32, y: 1024, z: -64, yaw: 90, pitch: 45, on_ground: true,
+        });
+    }
 
     #[test]
     fn decodes_keep_alive_varint() {
