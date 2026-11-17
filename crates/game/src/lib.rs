@@ -107,6 +107,13 @@ pub enum ServerAction {
         face: u8,
         status: DigStatus,
     },
+    /// Right-click a server block with an empty hand (chest, door, button, etc.).
+    /// Cursor coordinates are 0..=15 within the targeted block.
+    UseBlock {
+        position: BlockPos,
+        face: u8,
+        cursor: [u8; 3],
+    },
 }
 
 /// Decode the raw S21PacketChunkData data array for protocol 47.
