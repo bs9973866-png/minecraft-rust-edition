@@ -1,0 +1,14 @@
+[package]
+name = "rust-edition-client"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "rust-edition"
+path = "src/main.rs"
+
+[dependencies]
+rust-edition-protocol = { path = "../protocol" }
+rust-edition-game = { path = "../game" }
+rust-edition-renderer = { path = "../renderer" }
