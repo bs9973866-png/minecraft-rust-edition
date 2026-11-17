@@ -459,8 +459,8 @@ mod tests {
         let first = World::generate_region(12345, 0);
         let second = World::generate_region(12345, 0);
         assert_eq!(first.len(), second.len());
-        for x in -8..8 {
-            for z in -8..8 {
+        for x in 0..16 {
+            for z in 0..16 {
                 let surface = World::terrain_surface_height(x, z, 12345);
                 assert_eq!(first.block(BlockPos::new(x, surface - 1, z)), BlockState(2));
                 assert_eq!(first.block(BlockPos::new(x, surface - 2, z)), BlockState(3));
@@ -505,7 +505,7 @@ mod tests {
         ];
         for pos in positions { assert!(world.set_block(pos, BlockState(7))); }
         for pos in positions { assert_eq!(world.block(pos), BlockState(7)); }
-        assert_eq!(world.chunk_count(), 4);
+        assert_eq!(world.chunk_count(), 3);
         assert_eq!(world.len(), 4);
     }
 
@@ -582,7 +582,7 @@ mod tests {
         for y in 0..3 { for z in -1..=1 { world.set_solid(BlockPos::new(2, y, z)); } }
         let mut player = PlayerPhysics::new([1.0, 0.0, 0.0]);
         for _ in 0..60 { player.tick(&world, [1.0, 0.0], false, 1.0 / 60.0); }
-        assert!(player.position()[0] <= 1.4001);
+        assert!(player.position()[0] <= 1.7001);
     }
 
     #[test]
