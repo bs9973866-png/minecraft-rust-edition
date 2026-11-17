@@ -103,6 +103,80 @@ impl World {
     }
 }
 
+
+#[derive(Debug, Clone, Copy)]
+pub struct PlayerPhysics {
+    position: [f32; 3],
+    velocity: [f32; 3],
+    on_ground: bool,
+}
+
+impl PlayerPhysics {
+    pub const WIDTH: f32 = 0.6;
+    pub const HEIGHT: f32 = 1.8;
+    const HALF_WIDTH: f32 = Self::WIDTH * 0.5;
+
+    pub fn new(feet_position: [f32; 3]) -> Self {
+        Self { position: feet_position, velocity: [0.0; 3], on_ground: false }
+    }
+    pub fn position(&self) -> [f32; 3] { self.position }
+    pub fn velocity(&self) -> [f32; 3] { self.velocity }
+    pub fn on_ground(&self) -> bool { self.on_ground }
+
+    fn collides(world: &World, p: [f32; 3]) -> bool {
+        let min_x = (p[0] - Self::HALF_WIDTH).floor() as i32;
+        let max_x = (p[0] + Self::HALF_WIDTH - 0.0001).floor() as i32;
+        let min_y = p[1].floor() as i32;
+        let max_y = (p[1] + Self::HEIGHT - 0.0001).floor() as i32;
+        let min_z = (p[2] - Self::HALF_WIDTH).floor() as i32;
+        let max_z = (p[2] + Self::HALF_WIDTH - 0.0001).floor() as i32;
+        for x in min_x..=max_x {
+            for y in min_y..=max_y {
+                for z in min_z..=max_z {
+                    if world.contains(BlockPos::new(x, y, z)) { return true; }
+                }
+            }
+        }
+        false
+    }
+
+    fn move_axis(&mut self, world: &World, axis: usize, amount: f32) {
+        if amount == 0.0 { return; }
+        let count = (amount.abs() / 0.2).ceil().max(1.0) as usize;
+        let step = amount / count as f32;
+        for _ in 0..count {
+            let mut candidate = self.position;
+            candidate[axis] += step;
+            if Self::collides(world, candidate) {
+                self.velocity[axis] = 0.0;
+                if axis == 1 && step < 0.0 { self.on_ground = true; }
+                break;
+            }
+            self.position = candidate;
+        }
+    }
+
+    pub fn tick(&mut self, world: &World, horizontal: [f32; 2], jump_pressed: bool, dt: f32) {
+        let dt = if dt.is_finite() { dt.clamp(0.0, 0.05) } else { 0.0 };
+        if dt == 0.0 { return; }
+        let mut hx = horizontal[0];
+        let mut hz = horizontal[1];
+        let length = (hx * hx + hz * hz).sqrt();
+        if length > 1.0 { hx /= length; hz /= length; }
+        self.velocity[0] = hx * 5.0;
+        self.velocity[2] = hz * 5.0;
+        if jump_pressed && self.on_ground {
+            self.velocity[1] = 8.0;
+            self.on_ground = false;
+        }
+        self.velocity[1] = (self.velocity[1] - 24.0 * dt).max(-50.0);
+        self.move_axis(world, 0, self.velocity[0] * dt);
+        self.move_axis(world, 2, self.velocity[2] * dt);
+        self.on_ground = false;
+        self.move_axis(world, 1, self.velocity[1] * dt);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,6 +205,24 @@ mod tests {
         let hit = world.raycast([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], 5.0).unwrap();
         assert_eq!(hit.block, BlockPos::new(2, 0, 0));
         assert_eq!(hit.face, [-1, 0, 0]);
+    }
+
+    #[test]
+    fn player_physics_lands_and_stays_on_floor() {
+        let world = World::demo();
+        let mut player = PlayerPhysics::new([0.5, 5.0, 0.5]);
+        for _ in 0..120 { player.tick(&world, [0.0, 0.0], false, 1.0 / 60.0); }
+        assert!(player.on_ground());
+        assert!((player.position()[1] - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn player_physics_cannot_walk_through_a_wall() {
+        let mut world = World::new();
+        for y in 0..3 { for z in -1..=1 { world.set_solid(BlockPos::new(2, y, z)); } }
+        let mut player = PlayerPhysics::new([1.0, 0.0, 0.0]);
+        for _ in 0..60 { player.tick(&world, [1.0, 0.0], false, 1.0 / 60.0); }
+        assert!(player.position()[0] <= 1.4001);
     }
 
     #[test]
