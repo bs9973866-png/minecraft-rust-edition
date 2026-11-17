@@ -84,9 +84,23 @@ pub struct InventoryItem {
     pub nbt: Vec<u8>,
 }
 
+/// Minimal authoritative entity state from protocol-47 packets.
+#[derive(Debug, Clone, PartialEq)]
+pub struct EntityState {
+    pub entity_id: i32,
+    pub object_type: u8,
+    pub position: [f64; 3],
+    pub yaw: f32,
+    pub pitch: f32,
+}
+
 /// Events delivered from the protocol worker to the render/game thread.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ServerEvent {
+    EntitySpawn(EntityState),
+    EntityMove { entity_id: i32, delta: [f64; 3], on_ground: bool },
+    EntityTeleport(EntityState),
+    EntityRemove(Vec<i32>),
     ChunkColumn(DecodedChunkColumn),
     BlockChanges(Vec<(BlockPos, BlockState)>),
     InventorySlot { window_id: i8, slot: i16, item: Option<InventoryItem> },
