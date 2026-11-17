@@ -129,11 +129,14 @@ impl World {
 
     pub fn remove(&mut self, pos: BlockPos) -> bool {
         let Some((chunk_pos, x, z)) = Self::chunk_and_local(pos) else { return false; };
-        let Some(chunk) = self.chunks.get_mut(&chunk_pos) else { return false; };
-        if chunk.get(x, pos.y as usize, z).0 == 0 { return false; }
-        let _ = chunk.set(x, pos.y as usize, z, BlockState(0));
+        let chunk_is_empty = {
+            let Some(chunk) = self.chunks.get_mut(&chunk_pos) else { return false; };
+            if chunk.get(x, pos.y as usize, z).0 == 0 { return false; }
+            let _ = chunk.set(x, pos.y as usize, z, BlockState(0));
+            chunk.is_empty()
+        };
         self.block_count -= 1;
-        if chunk.is_empty() { self.chunks.remove(&chunk_pos); }
+        if chunk_is_empty { self.chunks.remove(&chunk_pos); }
         true
     }
 
