@@ -793,6 +793,13 @@ fn run_window_internal(
                                 gpu.refresh_overlay();
                             }
                         }
+                        Ok(ServerEvent::Respawn { dimension }) => {
+                            gpu.world.clear();
+                            gpu.chunk_meshes.clear();
+                            server_position_known = false;
+                            active_dig = None;
+                            eprintln!("[WORLD] cleared chunks for dimension {dimension}");
+                        }
                         Ok(ServerEvent::Teleport { position, yaw, pitch }) => {
                             gpu.camera.teleport(position, yaw, pitch);
                             server_position_known = true;
