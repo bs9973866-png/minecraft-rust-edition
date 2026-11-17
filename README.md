@@ -40,9 +40,10 @@ Run:
 cargo run -- --help
 cargo run -- --version
 cargo run -- --status play.example.net:25565
+cargo run -- --connect-offline 127.0.0.1:25565 PlayerName
 ```
 
-The status command performs the Minecraft Java status handshake and prints the raw JSON response. The library also exposes an offline-mode login function; online-mode authentication and the rendered game loop are not implemented yet.
+The status command performs the Minecraft Java status handshake and prints the raw JSON response. The connect command is a headless diagnostic session for offline-mode servers: it logs in, answers Keep Alive, decodes play events, and applies received chunk/block changes to the in-memory world. It does not render the game or provide player controls. Online-mode authentication is not implemented yet.
 
 ## Planned engine milestones
 
