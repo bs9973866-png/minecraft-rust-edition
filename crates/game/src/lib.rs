@@ -104,6 +104,38 @@ impl World {
 }
 
 
+
+/// Nine-slot quick-access bar. Slot values are block-state IDs; zero is empty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Hotbar {
+    slots: [BlockState; 9],
+    selected: usize,
+}
+
+impl Default for Hotbar {
+    fn default() -> Self {
+        Self { slots: [BlockState(1); 9], selected: 0 }
+    }
+}
+
+impl Hotbar {
+    pub const SLOT_COUNT: usize = 9;
+    pub fn selected_index(&self) -> usize { self.selected }
+    pub fn selected_block(&self) -> BlockState { self.slots[self.selected] }
+    pub fn slot(&self, index: usize) -> Option<BlockState> { self.slots.get(index).copied() }
+    pub fn select(&mut self, index: usize) -> bool {
+        if index >= Self::SLOT_COUNT { return false; }
+        self.selected = index;
+        true
+    }
+    pub fn cycle(&mut self, delta: i32) {
+        self.selected = (self.selected as i32 + delta).rem_euclid(Self::SLOT_COUNT as i32) as usize;
+    }
+    pub fn set_slot(&mut self, index: usize, block: BlockState) -> bool {
+        if let Some(slot) = self.slots.get_mut(index) { *slot = block; true } else { false }
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct PlayerPhysics {
     position: [f32; 3],
@@ -180,6 +212,28 @@ impl PlayerPhysics {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn hotbar_selects_and_cycles_with_wraparound() {
+        let mut hotbar = Hotbar::default();
+        assert_eq!(hotbar.selected_index(), 0);
+        assert!(hotbar.select(8));
+        assert_eq!(hotbar.selected_index(), 8);
+        hotbar.cycle(1);
+        assert_eq!(hotbar.selected_index(), 0);
+        hotbar.cycle(-1);
+        assert_eq!(hotbar.selected_index(), 8);
+        assert!(!hotbar.select(9));
+    }
+
+    #[test]
+    fn hotbar_stores_slot_block_states() {
+        let mut hotbar = Hotbar::default();
+        assert!(hotbar.set_slot(3, BlockState(5)));
+        assert_eq!(hotbar.slot(3), Some(BlockState(5)));
+        assert_eq!(hotbar.selected_block(), BlockState(1));
+        assert!(!hotbar.set_slot(9, BlockState(2)));
+    }
 
     #[test]
     fn chunk_coordinates_handle_negative_blocks() {
