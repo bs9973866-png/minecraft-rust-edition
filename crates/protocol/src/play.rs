@@ -321,7 +321,6 @@ mod tests {
     }
 
     #[test]
-    fn rejects_truncated_known_packet() { assert!(decode_play_packet(&[0x06, 0, 0]).is_err()); }    #[test]
     fn rejects_truncated_known_packet() { assert!(decode_play_packet(&[0x06, 0, 0]).is_err()); }
 
     #[test]
