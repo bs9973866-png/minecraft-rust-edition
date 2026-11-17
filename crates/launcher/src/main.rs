@@ -111,13 +111,13 @@ impl eframe::App for LauncherApp {
                         .fill(egui::Color32::from_rgb(116, 74, 190))
                         .min_size(egui::vec2(ui.available_width(), 48.0));
                     if ui.add(play).clicked() || enter_pressed {
-                        if self.launch() { _frame.close(); }
+                        if self.launch() { ctx.send_viewport_cmd(egui::ViewportCommand::Close); }
                     }
                     ui.add_space(14.0);
                     let color = if self.message_is_error { egui::Color32::from_rgb(255, 130, 130) } else { egui::Color32::from_rgb(155, 220, 175) };
                     ui.label(egui::RichText::new(&self.message).size(12.0).color(color));
                     ui.add_space(8.0);
-                    ui.label(egui::RichText::new("Ранний прототип • мультиплеер пока не реализован")
+                    ui.label(egui::RichText::new("Ранний прототип • сетевой мир пока не отображается в игровом окне")
                         .size(11.0).color(egui::Color32::from_rgb(110, 102, 125)));
                 });
             });
