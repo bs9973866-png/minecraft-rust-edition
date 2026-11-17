@@ -1,8 +1,8 @@
 //! Window and GPU rendering backend for Rust Edition.
 //! Draws a seed-generated voxel landscape with a movable first-person-style camera.
 
-use std::{collections::{HashMap, HashSet}, sync::Arc, time::Instant};
-use game::{BlockPos, ChunkPos, Hotbar, PlayerPhysics, World, CHUNK_WIDTH};
+use std::{collections::{HashMap, HashSet}, sync::{Arc, mpsc::{Receiver, TryRecvError}}, time::Instant};
+use game::{BlockPos, ChunkPos, Hotbar, PlayerPhysics, ServerEvent, World, CHUNK_WIDTH};
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
@@ -76,6 +76,11 @@ impl Camera {
         let sensitivity = 0.0025;
         self.yaw -= delta_x as f32 * sensitivity;
         self.pitch = (self.pitch - delta_y as f32 * sensitivity).clamp(-1.54, 1.54);
+    }
+
+    fn teleport(&mut self, feet_position: [f32; 3]) {
+        self.physics.teleport(feet_position);
+        self.position = Vec3::from_array(feet_position) + Vec3::Y * 1.62;
     }
 
     fn update_movement(&mut self, world: &World, dt: f32, keys: &HashSet<KeyCode>, jump_pressed: bool) {
@@ -210,7 +215,7 @@ fn build_chunk_vertices(world: &World, chunk_pos: ChunkPos) -> Vec<Vertex> {
     ];
     let mut vertices = Vec::new();
     for pos in world.chunk_blocks(chunk_pos) {
-        let base_color = match world.block(pos).0 {
+        let base_color = match world.block(pos).block_id() {
             2 => [0.30, 0.72, 0.25], // grass
             3 => [0.48, 0.31, 0.18], // dirt
             17 => [0.48, 0.29, 0.12], // log
@@ -238,7 +243,7 @@ fn create_depth_view(device: &wgpu::Device, width: u32, height: u32) -> wgpu::Te
 }
 
 impl GpuState {
-    async fn new(window: Arc<winit::window::Window>) -> Result<Self, String> {
+    async fn new(window: Arc<winit::window::Window>, server_mode: bool) -> Result<Self, String> {
         let size = window.inner_size();
         let instance = wgpu::Instance::default();
         let surface = instance.create_surface(window)
@@ -271,8 +276,16 @@ impl GpuState {
         surface.configure(&device, &config);
 
         const WORLD_SEED: u64 = 0x4E4F5641555241;
-        let world = World::generate_region(WORLD_SEED, 2);
-        let spawn_y = World::terrain_surface_height(0, 0, WORLD_SEED) as f32;
+        let world = if server_mode {
+            World::new()
+        } else {
+            World::generate_region(WORLD_SEED, 2)
+        };
+        let spawn_y = if server_mode {
+            64.0
+        } else {
+            World::terrain_surface_height(0, 0, WORLD_SEED) as f32
+        };
         let camera = Camera::new(config.width, config.height, [0.5, spawn_y, 0.5]);
         let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
             label: Some("Rust Edition camera uniform"),
@@ -387,6 +400,15 @@ impl GpuState {
         self.chunk_meshes.insert(chunk_pos, (buffer, vertices.len() as u32));
     }
 
+    fn rebuild_chunk_column_and_neighbors(&mut self, chunk: ChunkPos) {
+        for offset in [(0, 0), (1, 0), (-1, 0), (0, 1), (0, -1)] {
+            self.rebuild_chunk_mesh(ChunkPos {
+                x: chunk.x + offset.0,
+                z: chunk.z + offset.1,
+            });
+        }
+    }
+
     fn rebuild_chunk_and_neighbors(&mut self, pos: BlockPos) {
         let chunk = ChunkPos::from_block(pos.x, pos.z);
         self.rebuild_chunk_mesh(chunk);
@@ -486,13 +508,28 @@ pub fn run_window() -> Result<(), String> {
 
 /// Opens the game window and shows the selected offline profile in its title.
 pub fn run_window_with_username(username: &str) -> Result<(), String> {
+    run_window_internal(username, None)
+}
+
+/// Opens a server-backed window. Incoming chunk/teleport events are applied on the render thread.
+pub fn run_window_with_server_events(
+    username: &str,
+    events: Receiver<ServerEvent>,
+) -> Result<(), String> {
+    run_window_internal(username, Some(events))
+}
+
+fn run_window_internal(
+    username: &str,
+    mut server_events: Option<Receiver<ServerEvent>>,
+) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("creating event loop: {e}"))?;
     let title = format!("Minecraft 1.8.9 — Rust Edition | {username} | WASD + mouse");
     let window = Arc::new(WindowBuilder::new()
         .with_title(&title)
         .with_inner_size(PhysicalSize::new(1280, 720))
         .build(&event_loop).map_err(|e| format!("creating window: {e}"))?);
-    let mut gpu = pollster::block_on(GpuState::new(window.clone()))?;
+    let mut gpu = pollster::block_on(GpuState::new(window.clone(), server_events.is_some()))?;
     let _ = window.set_cursor_grab(CursorGrabMode::Locked)
         .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
     window.set_cursor_visible(false);
@@ -573,6 +610,22 @@ pub fn run_window_with_username(username: &str) -> Result<(), String> {
             _ => {}
         },
         Event::AboutToWait => {
+            if let Some(events) = server_events.as_ref() {
+                loop {
+                    match events.try_recv() {
+                        Ok(ServerEvent::ChunkColumn(column)) => {
+                            let chunk = ChunkPos { x: column.x, z: column.z };
+                            gpu.world.apply_chunk_column(&column);
+                            gpu.rebuild_chunk_column_and_neighbors(chunk);
+                        }
+                        Ok(ServerEvent::Teleport(position)) => {
+                            gpu.camera.teleport(position);
+                            gpu.update_camera();
+                        }
+                        Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
+                    }
+                }
+            }
             let now = Instant::now();
             let dt = (now - last_frame).as_secs_f32().min(0.05);
             last_frame = now;
