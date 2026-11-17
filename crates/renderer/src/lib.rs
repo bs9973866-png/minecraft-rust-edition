@@ -553,7 +553,7 @@ fn run_window_internal(
         .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
     window.set_cursor_visible(false);
     if action_tx.is_some() {
-        eprintln!("Rust Edition server mode: WASD move, mouse look, hold left click to mine, Escape quit. Block placement is not ready yet.");
+        eprintln!("Rust Edition server mode: WASD move, mouse look, left click to mine, right click to interact with blocks, Escape quit. Inventory-based block placement is not ready yet.");
     } else {
         eprintln!("Rust Edition: WASD move, mouse look, Space jump, left click break, right click place, Escape quit.");
     }
@@ -636,9 +636,19 @@ fn run_window_internal(
                         }
                     }
                     (MouseButton::Right, ElementState::Pressed) => {
-                        // Server placement needs a synchronized selected inventory slot;
-                        // never mutate a server-backed world locally.
-                        if action_tx.is_none() {
+                        if let Some(sender) = action_tx.as_ref() {
+                            let origin = gpu.camera.position.to_array();
+                            let direction = gpu.camera.forward().to_array();
+                            if let Some(hit) = gpu.world.raycast(origin, direction, 6.0) {
+                                let face = protocol_face_from_normal(hit.face);
+                                // Inventory sync is not implemented; do not invent a held item.
+                                let _ = sender.send(ServerAction::UseBlock {
+                                    position: hit.block,
+                                    face,
+                                    cursor: [8, 8, 8],
+                                });
+                            }
+                        } else {
                             gpu.interact(true);
                         }
                     }
