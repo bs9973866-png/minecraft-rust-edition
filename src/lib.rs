@@ -7,6 +7,7 @@
 pub mod entity;
 pub mod math;
 pub mod nbt;
+pub mod physics;
 pub mod protocol;
 pub mod world;
 

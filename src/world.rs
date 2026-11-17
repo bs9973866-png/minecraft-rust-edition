@@ -24,6 +24,34 @@ pub struct BlockState(pub u16);
 impl BlockState {
     pub const AIR: Self = Self(0);
     pub const fn is_air(self) -> bool { self.0 == 0 }
+
+    /// Legacy numeric block ID (metadata is stored in the low four bits).
+    pub const fn block_id(self) -> u16 { self.0 >> 4 }
+
+    /// True for the deliberately supported full-cube collision subset.
+    ///
+    /// Non-full blocks (slabs, stairs, fences, panes, doors, ladders, fluids,
+    /// carpets, plants and similar shapes) require their own collision boxes.
+    pub fn has_full_cube_collision(self) -> bool {
+        matches!(self.block_id(),
+            1 | 2 | 3 | 4 | 5 | 7 | 12 | 13 | 14 | 15 | 16 | 17 |
+            19 | 20 | 21 | 22 | 23 | 24 | 25 | 35 | 41 | 42 | 43 |
+            45 | 46 | 47 | 48 | 49 | 52 | 56 | 57 | 58 | 61 | 62 |
+            73 | 74 | 79 | 80 | 82 | 84 | 86 | 87 | 89 | 91 | 95 |
+            97 | 98 | 99 | 100 | 103 | 110 | 112 | 121 | 123 | 129 |
+            133 | 138 | 152 | 153 | 155 | 159 | 162 | 165 | 166 |
+            168 | 169 | 170 | 172 | 173 | 174 | 179 | 181
+        )
+    }
+
+    /// Block slipperiness used by ground movement; ordinary blocks use 0.6.
+    pub fn slipperiness(self) -> f64 {
+        match self.block_id() {
+            79 | 174 => 0.98,
+            165 => 0.8,
+            _ => 0.6,
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

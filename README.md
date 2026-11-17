@@ -26,6 +26,7 @@ An independent, clean-room Rust implementation project targeting the **Minecraft
 - Bounded packet cursor with primitive and UTF-8 string readers.
 - Sparse 16×256×16 chunk/world storage with correct negative-coordinate chunk math.
 - Vector/AABB primitives and 3D voxel DDA raycasting.
+- Initial player physics: normalized directional input, ground/air acceleration, gravity, jump impulse, friction and axis-clipped collisions against a full-cube block subset.
 - Unit tests for protocol framing, packet parsing, negative coordinates, sparse chunks, and raycasting.
 
 ## Build
