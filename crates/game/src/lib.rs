@@ -26,6 +26,22 @@ impl BlockPos {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct BlockState(pub u16);
 
+impl BlockState {
+    /// Store a legacy 1.8 block ID and 4-bit metadata in one u16.
+    pub const fn from_legacy(block_id: u16, metadata: u8) -> Self {
+        Self((block_id << 4) | (metadata as u16 & 0x0f))
+    }
+
+    /// Return the legacy block ID. Values 1..=15 remain compatible with local demo IDs.
+    pub const fn block_id(self) -> u16 {
+        if self.0 <= 15 { self.0 } else { self.0 >> 4 }
+    }
+
+    pub const fn metadata(self) -> u8 {
+        if self.0 <= 15 { 0 } else { (self.0 & 0x0f) as u8 }
+    }
+}
+
 /// Result of tracing a ray into the voxel world.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RayHit {
@@ -38,6 +54,92 @@ pub struct RayHit {
 /// Classic 1.8.9 chunk dimensions.
 pub const CHUNK_WIDTH: usize = 16;
 pub const CHUNK_HEIGHT: usize = 256;
+
+/// One decoded 16×16×16 section from a protocol-47 chunk column.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedChunkSection {
+    pub section_y: u8,
+    /// Block states in 1.8's YZX storage order: (y << 8) | (z << 4) | x.
+    pub blocks: Vec<BlockState>,
+}
+
+/// Decoded protocol-47 chunk column. Light arrays are validated but not yet rendered.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedChunkColumn {
+    pub x: i32,
+    pub z: i32,
+    pub ground_up: bool,
+    pub section_mask: u16,
+    pub sections: Vec<DecodedChunkSection>,
+    pub biomes: Option<Vec<u8>>,
+}
+
+/// Decode the raw S21PacketChunkData data array for protocol 47.
+///
+/// In 1.8 the data array stores every present section's block states first,
+/// then all block-light arrays, then (when present) all sky-light arrays,
+/// followed by 256 biome bytes for a ground-up chunk.
+pub fn decode_chunk_column(
+    x: i32,
+    z: i32,
+    ground_up: bool,
+    section_mask: u16,
+    data: &[u8],
+    has_skylight: bool,
+) -> Result<DecodedChunkColumn, String> {
+    let section_ids: Vec<u8> = (0..16)
+        .filter(|section| section_mask & (1_u16 << section) != 0)
+        .map(|section| section as u8)
+        .collect();
+    let section_count = section_ids.len();
+    let blocks_len = section_count.checked_mul(8192).ok_or("chunk block data size overflow")?;
+    let light_len = section_count.checked_mul(2048).ok_or("chunk light data size overflow")?;
+    let sky_len = if has_skylight { light_len } else { 0 };
+    let biome_len = if ground_up { 256 } else { 0 };
+    let expected_len = blocks_len.checked_add(light_len)
+        .and_then(|v| v.checked_add(sky_len))
+        .and_then(|v| v.checked_add(biome_len))
+        .ok_or("chunk data size overflow")?;
+
+    // A full-chunk packet with a zero mask is the 1.8 unload marker.
+    if ground_up && section_mask == 0 && data.is_empty() {
+        return Ok(DecodedChunkColumn {
+            x, z, ground_up, section_mask, sections: Vec::new(), biomes: None,
+        });
+    }
+    if data.len() != expected_len {
+        return Err(format!(
+            "invalid 1.8 chunk data length: expected {expected_len} bytes for {section_count} sections, got {}",
+            data.len()
+        ));
+    }
+
+    let mut sections = Vec::with_capacity(section_count);
+    for (section_index, section_y) in section_ids.iter().copied().enumerate() {
+        let start = section_index * 8192;
+        let bytes = &data[start..start + 8192];
+        let mut blocks = Vec::with_capacity(4096);
+        for pair in bytes.chunks_exact(2) {
+            let block_id = u16::from(pair[0] >> 4) | (u16::from(pair[1] & 0x0f) << 4);
+            let metadata = pair[0] & 0x0f;
+            blocks.push(if block_id == 0 {
+                BlockState(0)
+            } else {
+                BlockState::from_legacy(block_id, metadata)
+            });
+        }
+        sections.push(DecodedChunkSection { section_y, blocks });
+    }
+
+    let biome_start = blocks_len + light_len + sky_len;
+    let biomes = if ground_up {
+        Some(data[biome_start..biome_start + 256].to_vec())
+    } else {
+        None
+    };
+
+    Ok(DecodedChunkColumn { x, z, ground_up, section_mask, sections, biomes })
+}
 
 /// A sparse 16×256×16 chunk. Only non-air blocks occupy memory.
 #[derive(Debug, Default, Clone)]
@@ -88,6 +190,59 @@ impl World {
             pos.x.rem_euclid(CHUNK_WIDTH as i32) as usize,
             pos.z.rem_euclid(CHUNK_WIDTH as i32) as usize,
         ))
+    }
+
+    /// Remove a chunk column and return the number of stored non-air blocks.
+    pub fn unload_chunk(&mut self, pos: ChunkPos) -> usize {
+        if let Some(chunk) = self.chunks.remove(&pos) {
+            let removed = chunk.non_air_count();
+            self.block_count = self.block_count.saturating_sub(removed);
+            removed
+        } else {
+            0
+        }
+    }
+
+    /// Apply a full column or replace only the sections present in a partial update.
+    pub fn apply_chunk_column(&mut self, column: &DecodedChunkColumn) {
+        let chunk_pos = ChunkPos { x: column.x, z: column.z };
+        if column.ground_up {
+            self.unload_chunk(chunk_pos);
+        } else {
+            // Section updates replace the entire addressed section, including air blocks.
+            for section in &column.sections {
+                let base_y = i32::from(section.section_y) * 16;
+                for local_y in 0..16 {
+                    for local_z in 0..16 {
+                        for local_x in 0..16 {
+                            let pos = BlockPos::new(
+                                column.x * 16 + local_x,
+                                base_y + local_y,
+                                column.z * 16 + local_z,
+                            );
+                            let _ = self.set_block(pos, BlockState(0));
+                        }
+                    }
+                }
+            }
+        }
+
+        for section in &column.sections {
+            if section.blocks.len() != 4096 { continue; }
+            let base_y = i32::from(section.section_y) * 16;
+            for (index, state) in section.blocks.iter().copied().enumerate() {
+                if state.0 == 0 { continue; }
+                let local_x = (index & 0x0f) as i32;
+                let local_z = ((index >> 4) & 0x0f) as i32;
+                let local_y = ((index >> 8) & 0x0f) as i32;
+                let pos = BlockPos::new(
+                    column.x * 16 + local_x,
+                    base_y + local_y,
+                    column.z * 16 + local_z,
+                );
+                let _ = self.set_block(pos, state);
+            }
+        }
     }
 
     pub fn chunk(&self, pos: ChunkPos) -> Option<&Chunk> { self.chunks.get(&pos) }
@@ -433,6 +588,63 @@ mod tests {
     use super::*;
 
     #[test]
+    fn decodes_protocol_47_chunk_sections_and_legacy_metadata() {
+        let mut data = vec![0_u8; 8192 + 2048 + 2048 + 256];
+        // YZX index 0: stone (ID 1, metadata 0).
+        data[0] = 0x10;
+        // Index 1: wool (ID 35, metadata 14).
+        data[2] = 0x3e;
+        data[3] = 0x02;
+        data[8192 + 2048 + 2048] = 4;
+
+        let decoded = decode_chunk_column(2, -3, true, 1, &data, true).unwrap();
+        assert_eq!(decoded.sections.len(), 1);
+        assert_eq!(decoded.sections[0].section_y, 0);
+        assert_eq!(decoded.sections[0].blocks.len(), 4096);
+        assert_eq!(decoded.sections[0].blocks[0].block_id(), 1);
+        assert_eq!(decoded.sections[0].blocks[1].block_id(), 35);
+        assert_eq!(decoded.sections[0].blocks[1].metadata(), 14);
+        assert_eq!(decoded.biomes.as_ref().unwrap()[0], 4);
+    }
+
+    #[test]
+    fn decodes_nether_chunk_without_skylight() {
+        let data = vec![0_u8; 8192 + 2048];
+        let decoded = decode_chunk_column(0, 0, false, 1, &data, false).unwrap();
+        assert_eq!(decoded.sections[0].blocks.len(), 4096);
+        assert!(decoded.biomes.is_none());
+    }
+
+    #[test]
+    fn rejects_chunk_data_with_wrong_section_length() {
+        assert!(decode_chunk_column(0, 0, true, 1, &[0; 8192], true).is_err());
+    }
+
+    #[test]
+    fn applies_full_and_partial_chunk_updates_to_world() {
+        let mut full_data = vec![0_u8; 8192 + 2048 + 2048 + 256];
+        full_data[0] = 0x10; // block ID 1 at local (0,0,0)
+        let full = decode_chunk_column(1, 0, true, 1, &full_data, true).unwrap();
+        let mut world = World::new();
+        world.apply_chunk_column(&full);
+        assert_eq!(world.block(BlockPos::new(16, 0, 0)).block_id(), 1);
+
+        // A partial section update containing only air must remove that section's old blocks.
+        let empty_section = decode_chunk_column(1, 0, false, 1, &vec![0; 8192 + 2048 + 2048], true).unwrap();
+        world.apply_chunk_column(&empty_section);
+        assert!(world.is_empty());
+    }
+
+    #[test]
+    fn unloads_a_full_chunk_column() {
+        let mut world = World::new();
+        world.set_block(BlockPos::new(-1, 20, 3), BlockState(1));
+        let unload = decode_chunk_column( -1, 0, true, 0, &[], true).unwrap();
+        world.apply_chunk_column(&unload);
+        assert!(world.is_empty());
+    }
+
+    #[test]
     fn hotbar_selects_and_cycles_with_wraparound() {
         let mut hotbar = Hotbar::default();
         assert_eq!(hotbar.selected_index(), 0);
@@ -579,8 +791,9 @@ mod tests {
     #[test]
     fn player_physics_cannot_walk_through_a_wall() {
         let mut world = World::new();
-        for y in 0..3 { for z in -1..=1 { world.set_solid(BlockPos::new(2, y, z)); } }
-        let mut player = PlayerPhysics::new([1.0, 0.0, 0.0]);
+        for x in -2..=5 { for z in -2..=2 { world.set_solid(BlockPos::new(x, 0, z)); } }
+        for y in 1..=3 { for z in -1..=1 { world.set_solid(BlockPos::new(2, y, z)); } }
+        let mut player = PlayerPhysics::new([1.0, 1.0, 0.0]);
         for _ in 0..60 { player.tick(&world, [1.0, 0.0], false, 1.0 / 60.0); }
         assert!(player.position()[0] <= 1.7001);
     }
