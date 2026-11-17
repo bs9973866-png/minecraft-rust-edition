@@ -36,7 +36,7 @@ Controls in `--window` mode:
 - Right mouse button: place a block on the face being targeted
 - `Escape`: close the window
 
-The current scene remains generated test terrain. It is not yet Minecraft's actual chunk data, textures, terrain generator, player collision/physics, or multiplayer world.
+The game crate now includes a basic player AABB, gravity, jumping, and axis-separated block collision. The renderer starts the player above the demo island and uses Space to jump. This is still an early physics prototype: it does not yet include Minecraft's exact movement constants, step-up behavior, swimming, ladders, sprinting, or multiplayer prediction. The current scene remains generated test terrain, not Minecraft's actual chunks, textures, or terrain generator.
 
 Run it with:
 
