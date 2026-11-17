@@ -1,7 +1,7 @@
 mod status;
 mod login;
 
-use game::{decode_chunk_column, BlockPos, BlockState, ChunkPos, PlayerMovement, ServerEvent};
+use game::{decode_chunk_column, BlockPos, BlockState, ChunkPos, PlayerMovement, ServerAction, ServerEvent};
 use protocol::{encode_varint, PlayPacket};
 use std::{sync::mpsc, thread};
 use renderer::RenderConfig;
@@ -56,8 +56,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let thread_host = host.clone();
         let thread_username = username.clone();
         let (event_tx, event_rx) = mpsc::channel::<ServerEvent>();
-        let (control_tx, control_rx) =
-            mpsc::channel::<(mpsc::Sender<PlayerMovement>, login::PlayPacketSender)>();
+        let (control_tx, control_rx) = mpsc::channel::<(
+            mpsc::Sender<PlayerMovement>,
+            mpsc::Sender<ServerAction>,
+            login::PlayPacketSender,
+        )>();
 
         thread::Builder::new()
             .name("rust-edition-network".into())
@@ -81,6 +84,23 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                 let packet_sender = session.packet_sender();
                 let movement_sender = packet_sender.clone();
                 let (movement_tx, movement_rx) = mpsc::channel::<PlayerMovement>();
+                let action_sender = packet_sender.clone();
+                let (action_tx, action_rx) = mpsc::channel::<ServerAction>();
+                if let Err(error) = thread::Builder::new()
+                    .name("rust-edition-action-writer".into())
+                    .spawn(move || {
+                        while let Ok(action) = action_rx.recv() {
+                            if let Err(error) = action_sender.send_server_action(action) {
+                                eprintln!("[NETWORK] block action send failed: {error}");
+                                break;
+                            }
+                        }
+                    })
+                {
+                    eprintln!("[NETWORK] could not start action writer: {error}");
+                    return;
+                }
+
                 if let Err(error) = thread::Builder::new()
                     .name("rust-edition-movement-writer".into())
                     .spawn(move || {
@@ -96,7 +116,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     return;
                 }
 
-                if control_tx.send((movement_tx, packet_sender)).is_err() {
+                if control_tx.send((movement_tx, action_tx, packet_sender)).is_err() {
                     return;
                 }
 
@@ -203,13 +223,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             })?;
 
         // Wait until login completes so the renderer receives a live movement channel.
-        let (movement_tx, packet_sender) = control_rx
+        let (movement_tx, action_tx, packet_sender) = control_rx
             .recv()
             .map_err(|_| "server connection ended before the game window could open")?;
         println!("Opening server world window for {username} at {host}:{port}.");
-        println!("Server chunks and block updates are rendered; WASD movement is sent to the server.");
+        println!("Server chunks and block updates are rendered; WASD movement and left-click mining are sent to the server.");
         let render_result =
-            renderer::run_window_with_server_events(&username, event_rx, movement_tx);
+            renderer::run_window_with_server_events(&username, event_rx, movement_tx, action_tx);
         let _ = packet_sender.shutdown();
         render_result.map_err(|error| format!("renderer: {error}"))?;
         return Ok(());
