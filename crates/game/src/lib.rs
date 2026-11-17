@@ -161,8 +161,8 @@ impl World {
     /// Creates a deterministic 9×9 test island with a few raised blocks.
     pub fn demo() -> Self {
         let mut world = Self::new();
-        for x in -4..=4 {
-            for z in -4..=4 {
+        for x in -4_i32..=4 {
+            for z in -4_i32..=4 {
                 let height = if (x * 3 + z * 5).rem_euclid(7) == 0 { 2 } else { 1 };
                 for y in 0..height { world.set_solid(BlockPos::new(x, y, z)); }
             }
