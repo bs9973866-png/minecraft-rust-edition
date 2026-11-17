@@ -117,6 +117,16 @@ impl PlayPacketSender {
         self.send(&packet)
     }
 
+    /// Send a protocol-47 chat message (including slash commands).
+    pub fn send_chat_message(&self, message: &str) -> Result<(), String> {
+        if message.chars().count() > 100 {
+            return Err("Minecraft 1.8.9 chat messages are limited to 100 characters".into());
+        }
+        let mut packet = vec![0x01];
+        write_string(message, &mut packet)?;
+        self.send(&packet)
+    }
+
     /// Close the underlying TCP connection, including its read side.
     pub fn shutdown(&self) -> Result<(), String> {
         let stream = self.stream.lock().map_err(|_| "packet writer lock poisoned")?;
