@@ -170,6 +170,87 @@ impl World {
         world
     }
 
+    /// Returns the first air block above the generated terrain at world X/Z.
+    pub fn terrain_surface_height(x: i32, z: i32, seed: u64) -> i32 {
+        let broad = value_noise(x, z, 96, seed, 0xA0761D6478BD642F);
+        let medium = value_noise(x, z, 32, seed, 0xE7037ED1A0B428DB);
+        let detail = value_noise(x, z, 12, seed, 0x8EBC6AF09C88C6E3);
+        (38.0 + broad * 13.0 + medium * 5.0 + detail * 2.0).round() as i32
+    }
+
+    /// Generates a square of deterministic terrain chunks around chunk (0, 0).
+    /// Block IDs: 1 stone, 2 grass, 3 dirt, 17 log, 18 leaves.
+    pub fn generate_region(seed: u64, chunk_radius: i32) -> Self {
+        let mut world = Self::new();
+        let radius = chunk_radius.max(0);
+        for chunk_x in -radius..=radius {
+            for chunk_z in -radius..=radius {
+                world.generate_chunk_terrain(ChunkPos { x: chunk_x, z: chunk_z }, seed);
+            }
+        }
+        for chunk_x in -radius..=radius {
+            for chunk_z in -radius..=radius {
+                world.generate_chunk_trees(ChunkPos { x: chunk_x, z: chunk_z }, seed);
+            }
+        }
+        world
+    }
+
+    fn generate_chunk_terrain(&mut self, chunk_pos: ChunkPos, seed: u64) {
+        let start_x = chunk_pos.x * CHUNK_WIDTH as i32;
+        let start_z = chunk_pos.z * CHUNK_WIDTH as i32;
+        for local_x in 0..CHUNK_WIDTH as i32 {
+            for local_z in 0..CHUNK_WIDTH as i32 {
+                let x = start_x + local_x;
+                let z = start_z + local_z;
+                let surface = Self::terrain_surface_height(x, z, seed).clamp(4, CHUNK_HEIGHT as i32 - 8);
+                for y in 0..surface {
+                    let state = if y == surface - 1 { 2 }
+                        else if y >= surface - 4 { 3 }
+                        else { 1 };
+                    self.set_block(BlockPos::new(x, y, z), BlockState(state));
+                }
+            }
+        }
+    }
+
+    fn generate_chunk_trees(&mut self, chunk_pos: ChunkPos, seed: u64) {
+        let min_x = chunk_pos.x * CHUNK_WIDTH as i32;
+        let min_z = chunk_pos.z * CHUNK_WIDTH as i32;
+        let max_x = min_x + CHUNK_WIDTH as i32;
+        let max_z = min_z + CHUNK_WIDTH as i32;
+        // Inspect a two-block border so canopies remain continuous across chunk edges.
+        for tree_x in (min_x - 2)..(max_x + 2) {
+            for tree_z in (min_z - 2)..(max_z + 2) {
+                if coordinate_hash(tree_x, tree_z, seed, 0x589965CC75374CC3) % 113 != 0 { continue; }
+                let ground_y = Self::terrain_surface_height(tree_x, tree_z, seed);
+                if self.block(BlockPos::new(tree_x, ground_y - 1, tree_z)).0 != 2 { continue; }
+                let tree_height = 4 + (coordinate_hash(tree_x, tree_z, seed, 0x1D8E4E27C47D124F) % 3) as i32;
+                for dy in 0..tree_height {
+                    let y = ground_y + dy;
+                    if tree_x >= min_x && tree_x < max_x && tree_z >= min_z && tree_z < max_z {
+                        self.set_block(BlockPos::new(tree_x, y, tree_z), BlockState(17));
+                    }
+                }
+                let canopy_y = ground_y + tree_height - 1;
+                for dx in -2i32..=2 {
+                    for dz in -2i32..=2 {
+                        for dy in -1i32..=2 {
+                            if dx.abs() + dz.abs() + (dy.max(0)) > 4 { continue; }
+                            let x = tree_x + dx;
+                            let z = tree_z + dz;
+                            if x < min_x || x >= max_x || z < min_z || z >= max_z { continue; }
+                            let y = canopy_y + dy;
+                            if self.block(BlockPos::new(x, y, z)).0 == 0 {
+                                self.set_block(BlockPos::new(x, y, z), BlockState(18));
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Voxel DDA raycast. Direction is normalized internally; max_distance is in blocks.
     pub fn raycast(&self, origin: [f32; 3], direction: [f32; 3], max_distance: f32) -> Option<RayHit> {
         if !max_distance.is_finite() || max_distance <= 0.0
@@ -208,6 +289,40 @@ impl World {
     }
 }
 
+
+fn coordinate_hash(x: i32, z: i32, seed: u64, salt: u64) -> u64 {
+    let mut value = seed ^ salt ^ (x as i64 as u64).wrapping_mul(0x9E3779B185EBCA87)
+        ^ (z as i64 as u64).wrapping_mul(0xC2B2AE3D27D4EB4F);
+    value ^= value >> 30;
+    value = value.wrapping_mul(0xBF58476D1CE4E5B9);
+    value ^= value >> 27;
+    value = value.wrapping_mul(0x94D049BB133111EB);
+    value ^ (value >> 31)
+}
+
+fn lattice_value(x: i32, z: i32, seed: u64, salt: u64) -> f32 {
+    let value = coordinate_hash(x, z, seed, salt) >> 40;
+    (value as f32 / 8_388_607.5) - 1.0
+}
+
+fn smooth_curve(value: f32) -> f32 { value * value * (3.0 - 2.0 * value) }
+
+fn value_noise(x: i32, z: i32, scale: i32, seed: u64, salt: u64) -> f32 {
+    let scale = scale.max(1);
+    let cell_x = x.div_euclid(scale);
+    let cell_z = z.div_euclid(scale);
+    let local_x = x.rem_euclid(scale) as f32 / scale as f32;
+    let local_z = z.rem_euclid(scale) as f32 / scale as f32;
+    let tx = smooth_curve(local_x);
+    let tz = smooth_curve(local_z);
+    let a = lattice_value(cell_x, cell_z, seed, salt);
+    let b = lattice_value(cell_x + 1, cell_z, seed, salt);
+    let c = lattice_value(cell_x, cell_z + 1, seed, salt);
+    let d = lattice_value(cell_x + 1, cell_z + 1, seed, salt);
+    let top = a + (b - a) * tx;
+    let bottom = c + (d - c) * tx;
+    top + (bottom - top) * tz
+}
 
 /// Nine-slot quick-access bar. Slot values are block-state IDs; zero is empty.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,6 +452,40 @@ mod tests {
         assert_eq!(hotbar.slot(3), Some(BlockState(5)));
         assert_eq!(hotbar.selected_block(), BlockState(1));
         assert!(!hotbar.set_slot(9, BlockState(2)));
+    }
+
+    #[test]
+    fn terrain_generation_is_deterministic_and_has_layers() {
+        let first = World::generate_region(12345, 0);
+        let second = World::generate_region(12345, 0);
+        assert_eq!(first.len(), second.len());
+        for x in -8..8 {
+            for z in -8..8 {
+                let surface = World::terrain_surface_height(x, z, 12345);
+                assert_eq!(first.block(BlockPos::new(x, surface - 1, z)), BlockState(2));
+                assert_eq!(first.block(BlockPos::new(x, surface - 2, z)), BlockState(3));
+                assert_eq!(first.block(BlockPos::new(x, surface - 5, z)), BlockState(1));
+            }
+        }
+        assert_eq!(first.iter().collect::<std::collections::HashSet<_>>(),
+                   second.iter().collect::<std::collections::HashSet<_>>());
+    }
+
+    #[test]
+    fn generated_region_populates_expected_chunks_and_tree_blocks() {
+        let world = World::generate_region(7, 1);
+        assert!(world.chunk_count() >= 9);
+        assert!(world.len() > 9 * 16 * 16 * 30);
+        assert!(world.iter().any(|pos| world.block(pos).0 == 17));
+        assert!(world.iter().any(|pos| world.block(pos).0 == 18));
+    }
+
+    #[test]
+    fn terrain_height_is_continuous_across_chunk_edges() {
+        let seed = 9876;
+        let left = World::terrain_surface_height(15, 4, seed);
+        let right = World::terrain_surface_height(16, 4, seed);
+        assert!((left - right).abs() <= 3);
     }
 
     #[test]
