@@ -41,39 +41,43 @@ impl LauncherApp {
         fs::write(path, data).map_err(|e| format!("Не удалось записать настройки: {e}"))
     }
 
-    fn launch(&mut self) {
+    fn launch(&mut self) -> bool {
         let nickname = self.nickname.trim();
         if !valid_nickname(nickname) {
             self.message = "Ник: 3–16 символов, только латинские буквы, цифры и _.".into();
             self.message_is_error = true;
-            return;
+            return false;
         }
 
         if let Err(error) = self.save() {
             self.message = error;
             self.message_is_error = true;
-            return;
+            return false;
         }
 
         let Some(client) = find_client_executable() else {
             self.message = "Не найден rust-edition.exe. Положи его рядом с лаунчером или собери проект командой cargo build --release -p rust-edition-client.".into();
             self.message_is_error = true;
-            return;
+            return false;
         };
 
-        match Command::new(client)
-            .arg("--window")
-            .arg("--username")
-            .arg(nickname)
-            .spawn()
-        {
+        let working_dir = client.parent().map(PathBuf::from);
+        let mut command = Command::new(client);
+        command.arg("--window").arg("--username").arg(nickname);
+        if let Some(directory) = working_dir {
+            command.current_dir(directory);
+        }
+
+        match command.spawn() {
             Ok(_) => {
                 self.message = format!("Запускаю Rust Edition под ником {nickname}.");
                 self.message_is_error = false;
+                true
             }
             Err(error) => {
                 self.message = format!("Не удалось запустить игру: {error}");
                 self.message_is_error = true;
+                false
             }
         }
     }
@@ -96,7 +100,9 @@ impl eframe::App for LauncherApp {
                         .hint_text("Введите ник")
                         .desired_width(f32::INFINITY)
                         .margin(egui::Margin::symmetric(12.0, 11.0));
-                    ui.add(edit);
+                    let edit_response = ui.add(edit);
+                    let enter_pressed = edit_response.lost_focus()
+                        && ui.input(|input| input.key_pressed(egui::Key::Enter));
                     ui.add_space(8.0);
                     ui.label(egui::RichText::new("Ник сохраняется на этом компьютере. Аккаунт Microsoft не нужен.")
                         .size(12.0).color(egui::Color32::from_rgb(145, 135, 160)));
@@ -104,7 +110,9 @@ impl eframe::App for LauncherApp {
                     let play = egui::Button::new(egui::RichText::new("▶   ИГРАТЬ").size(18.0).strong())
                         .fill(egui::Color32::from_rgb(116, 74, 190))
                         .min_size(egui::vec2(ui.available_width(), 48.0));
-                    if ui.add(play).clicked() { self.launch(); }
+                    if ui.add(play).clicked() || enter_pressed {
+                        if self.launch() { _frame.close(); }
+                    }
                     ui.add_space(14.0);
                     let color = if self.message_is_error { egui::Color32::from_rgb(255, 130, 130) } else { egui::Color32::from_rgb(155, 220, 175) };
                     ui.label(egui::RichText::new(&self.message).size(12.0).color(color));
