@@ -1689,6 +1689,63 @@ mod tests {
         assert!(matches!(decode_window_items(&too_many), Err(ProtocolError::InvalidWindowData(_))));
     }
     #[test]
+    fn play_session_applies_server_inventory_updates() {
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            let mut window_items = vec![0];
+            window_items.extend_from_slice(&3_i16.to_be_bytes());
+            put_network_item_stack(-1, 0, 0, None, &mut window_items);
+            put_network_item_stack(1, 64, 0, None, &mut window_items);
+            put_network_item_stack(276, 1, 7, Some(&[10, 0, 0, 0]), &mut window_items);
+            socket.write_all(&encode_packet(0x30, &window_items)).unwrap();
+
+            let mut carried = vec![0xff];
+            carried.extend_from_slice(&(-1_i16).to_be_bytes());
+            put_network_item_stack(388, 4, 0, None, &mut carried);
+            socket.write_all(&encode_packet(0x2F, &carried)).unwrap();
+
+            let mut slot = vec![0];
+            slot.extend_from_slice(&1_i16.to_be_bytes());
+            put_network_item_stack(5, 12, 2, None, &mut slot);
+            socket.write_all(&encode_packet(0x2F, &slot)).unwrap();
+        });
+
+        let socket = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut play = PlaySession {
+            identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
+            stream: PacketStream::new(socket),
+            entity_id: 1,
+            dimension: Some(0),
+            selected_hotbar_slot: 0,
+            inventory_windows: std::collections::HashMap::new(),
+            carried_item: None,
+        };
+
+        assert!(matches!(play.read_event().unwrap(), PlayEvent::WindowItems(_)));
+        let inventory = play.inventory_windows.get(&0).unwrap();
+        assert_eq!(inventory.len(), 3);
+        assert!(inventory[0].is_none());
+        assert_eq!(inventory[1].as_ref().unwrap().item_id, 1);
+        assert_eq!(inventory[2].as_ref().unwrap().tag.as_ref().unwrap().value, Tag::Compound(std::collections::BTreeMap::new()));
+
+        assert!(matches!(play.read_event().unwrap(), PlayEvent::SetSlot(_)));
+        assert_eq!(play.carried_item.as_ref().unwrap().item_id, 388);
+        assert_eq!(play.carried_item.as_ref().unwrap().count, 4);
+
+        assert!(matches!(play.read_event().unwrap(), PlayEvent::SetSlot(_)));
+        let inventory = play.inventory_windows.get(&0).unwrap();
+        assert_eq!(inventory[1].as_ref().unwrap().item_id, 5);
+        assert_eq!(inventory[1].as_ref().unwrap().count, 12);
+        server.join().unwrap();
+    }
+    #[test]
     fn parses_host_ports() {
         assert_eq!(parse_host_port("play.example.net:25565").unwrap(), ("play.example.net".into(), 25565));
         assert_eq!(parse_host_port("[::1]:25566").unwrap(), ("::1".into(), 25566));
