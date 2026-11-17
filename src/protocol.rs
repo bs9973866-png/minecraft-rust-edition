@@ -10,7 +10,7 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 
-use crate::world::{BlockPos, BlockState, ChunkColumnData, ChunkPos, ChunkSectionData};
+use crate::world::{BlockPos, BlockState, ChunkColumnData, ChunkPos, ChunkSectionData, World};
 
 pub const PROTOCOL_VERSION: i32 = 47;
 pub const DEFAULT_MAX_FRAME_SIZE: usize = 2 * 1024 * 1024;
@@ -23,6 +23,7 @@ pub enum ProtocolError {
     InvalidChunkData(&'static str), InvalidBlockUpdate(&'static str),
     UnexpectedPacket { expected: i32, actual: i32 }, InvalidAddress(String),
     OnlineModeRequired, LoginRejected(String), InvalidLoginPacket(i32),
+    MissingJoinGame, WorldUpdate(String),
 }
 
 impl fmt::Display for ProtocolError {
@@ -43,6 +44,8 @@ impl fmt::Display for ProtocolError {
             Self::OnlineModeRequired => write!(f, "server requires online-mode encryption/authentication; this client only supports offline login"),
             Self::LoginRejected(reason) => write!(f, "server rejected login: {reason}"),
             Self::InvalidLoginPacket(id) => write!(f, "unexpected login-state packet id: {id}"),
+            Self::MissingJoinGame => write!(f, "received chunk data before Join Game"),
+            Self::WorldUpdate(error) => write!(f, "failed to update world: {error}"),
         }
     }
 }
@@ -601,6 +604,123 @@ impl<S: Read + Write> PacketStream<S> {
     pub fn into_inner(self) -> S { self.inner }
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RespawnInfo {
+    pub dimension: i32,
+    pub difficulty: u8,
+    pub game_mode: u8,
+    pub level_type: String,
+}
+
+pub fn decode_respawn(payload: &[u8]) -> Result<RespawnInfo, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let info = RespawnInfo {
+        dimension: cursor.read_i32()?,
+        difficulty: cursor.read_u8()?,
+        game_mode: cursor.read_u8()?,
+        level_type: cursor.read_string(16)?,
+    };
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in Respawn")); }
+    Ok(info)
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub enum PlayEvent {
+    JoinGame(JoinGameInfo),
+    ChatMessage(String),
+    TimeUpdate(TimeUpdate),
+    SpawnPosition(BlockPos),
+    Respawn(RespawnInfo),
+    PlayerPositionLook(PlayerPositionLook),
+    Chunk(ChunkColumnData),
+    ChunkBulk(MapChunkBulkData),
+    BlockChange(BlockChange),
+    MultiBlockChange(MultiBlockChange),
+    KeepAliveResponded(i32),
+    Unknown { packet_id: i32, payload: Vec<u8> },
+}
+
+/// A logged-in protocol-47 play connection. Keep Alive packets are answered automatically.
+pub struct PlaySession {
+    pub identity: LoginSuccess,
+    pub stream: PacketStream<TcpStream>,
+    pub entity_id: i32,
+    pub dimension: Option<i8>,
+}
+
+impl LoginSession {
+    pub fn into_play(self) -> PlaySession {
+        PlaySession { identity: self.identity, stream: self.stream, entity_id: 0, dimension: None }
+    }
+}
+
+impl PlaySession {
+    /// Read and decode one serverbound Play packet. Unknown packet IDs are preserved verbatim.
+    pub fn read_event(&mut self) -> Result<PlayEvent, ProtocolError> {
+        let packet = self.stream.read_packet()?;
+        let mut cursor = PacketCursor::new(&packet);
+        let packet_id = cursor.read_varint()?;
+        let payload = cursor.read_bytes(cursor.remaining())?;
+        match packet_id {
+            0x00 => {
+                let keep_alive = decode_keep_alive(payload)?;
+                let mut response = Vec::new();
+                write_varint(keep_alive.id, &mut response);
+                self.stream.write_packet(0x00, &response)?;
+                Ok(PlayEvent::KeepAliveResponded(keep_alive.id))
+            }
+            0x01 => {
+                let join = decode_join_game(payload)?;
+                self.entity_id = join.entity_id;
+                self.dimension = Some(join.dimension);
+                Ok(PlayEvent::JoinGame(join))
+            }
+            0x02 => {
+                let mut chat = PacketCursor::new(payload);
+                let message = chat.read_string(32_767)?;
+                if !chat.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in Chat Message")); }
+                Ok(PlayEvent::ChatMessage(message))
+            }
+            0x03 => Ok(PlayEvent::TimeUpdate(decode_time_update(payload)?)),
+            0x05 => Ok(PlayEvent::SpawnPosition(decode_spawn_position(payload)?)),
+            0x07 => {
+                let respawn = decode_respawn(payload)?;
+                self.dimension = Some(respawn.dimension as i8);
+                Ok(PlayEvent::Respawn(respawn))
+            }
+            0x08 => Ok(PlayEvent::PlayerPositionLook(decode_player_position_look(payload)?)),
+            0x21 => {
+                let dimension = self.dimension.ok_or(ProtocolError::MissingJoinGame)?;
+                Ok(PlayEvent::Chunk(decode_chunk_data_packet(payload, dimension == 0)?))
+            }
+            0x22 => Ok(PlayEvent::MultiBlockChange(decode_multi_block_change(payload)?)),
+            0x23 => Ok(PlayEvent::BlockChange(decode_block_change(payload)?)),
+            0x26 => Ok(PlayEvent::ChunkBulk(decode_map_chunk_bulk(payload)?)),
+            other => Ok(PlayEvent::Unknown { packet_id: other, payload: payload.to_vec() }),
+        }
+    }
+
+    /// Read the next event and apply authoritative world changes before returning it.
+    pub fn read_world_event(&mut self, world: &mut World) -> Result<PlayEvent, ProtocolError> {
+        let event = self.read_event()?;
+        let result = match &event {
+            PlayEvent::Chunk(chunk) => world.apply_chunk_data(chunk.clone()),
+            PlayEvent::ChunkBulk(bulk) => world.apply_chunk_batch(bulk.columns.clone()),
+            PlayEvent::BlockChange(change) => {
+                world.apply_block_change(change.position, change.state);
+                return Ok(event);
+            }
+            PlayEvent::MultiBlockChange(change) => {
+                world.apply_block_changes(change.records.iter().map(|record| (record.position, record.state)));
+                return Ok(event);
+            }
+            _ => return Ok(event),
+        };
+        result.map_err(|error| ProtocolError::WorldUpdate(error.to_string()))?;
+        Ok(event)
+    }
+}
+
 /// Read one complete Minecraft packet frame from a stream.
 pub fn read_frame<R: Read>(reader: &mut R, maximum: usize) -> Result<Vec<u8>, ProtocolError> {
     let length = read_varint(reader)?;
@@ -1086,6 +1206,71 @@ mod tests {
         });
         let result = login_offline("127.0.0.1", port, "RustPlayer", Duration::from_secs(3));
         assert!(matches!(result, Err(ProtocolError::LoginRejected(reason)) if reason.contains("Invalid username")));
+        server.join().unwrap();
+    }
+    #[test]
+    fn play_session_tracks_join_dimension_and_auto_answers_keep_alive() {
+        use std::net::TcpListener;
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+            let _handshake = read_frame(&mut socket, 256).unwrap();
+            let _login = read_frame(&mut socket, 128).unwrap();
+            let mut success = Vec::new();
+            write_string("12345678123456781234567812345678", &mut success);
+            write_string("RustPlayer", &mut success);
+            socket.write_all(&encode_packet(0x02, &success)).unwrap();
+            let mut join = Vec::new();
+            join.extend_from_slice(&77_i32.to_be_bytes());
+            join.extend_from_slice(&[1, 0, 2, 20]);
+            write_string("default", &mut join);
+            join.push(0);
+            socket.write_all(&encode_packet(0x01, &join)).unwrap();
+            let mut keep_alive = Vec::new();
+            write_varint(12345, &mut keep_alive);
+            socket.write_all(&encode_packet(0x00, &keep_alive)).unwrap();
+            let reply = read_frame(&mut socket, 64).unwrap();
+            let mut cursor = PacketCursor::new(&reply);
+            assert_eq!(cursor.read_varint().unwrap(), 0x00);
+            assert_eq!(cursor.read_varint().unwrap(), 12345);
+        });
+
+        let login = login_offline("127.0.0.1", port, "RustPlayer", Duration::from_secs(3)).unwrap();
+        let mut play = login.into_play();
+        assert!(matches!(play.read_event().unwrap(), PlayEvent::JoinGame(join) if join.entity_id == 77 && join.dimension == 0));
+        assert_eq!(play.entity_id, 77);
+        assert_eq!(play.dimension, Some(0));
+        assert_eq!(play.read_event().unwrap(), PlayEvent::KeepAliveResponded(12345));
+        server.join().unwrap();
+    }
+
+    #[test]
+    fn play_session_requires_join_game_before_chunk_data() {
+        use std::net::{TcpListener, TcpStream};
+        use std::thread;
+        use std::time::Duration;
+
+        let listener = TcpListener::bind(("127.0.0.1", 0)).unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let packet = encode_packet(0x21, &make_chunk_payload(true, 1, true));
+        let server = thread::spawn(move || {
+            let (mut socket, _) = listener.accept().unwrap();
+            socket.write_all(&packet).unwrap();
+        });
+        let socket = TcpStream::connect(("127.0.0.1", port)).unwrap();
+        socket.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let mut play = PlaySession {
+            identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
+            stream: PacketStream::new(socket),
+            entity_id: 0,
+            dimension: None,
+        };
+        assert!(matches!(play.read_event(), Err(ProtocolError::MissingJoinGame)));
         server.join().unwrap();
     }
     #[test]
