@@ -1,10 +1,12 @@
 //! Offline-mode login and live Play-state session for Minecraft Java 1.8.9 (protocol 47).
 //! Online-mode encryption/authentication is deliberately not implemented.
 use std::io::{Read, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::net::{Shutdown, TcpStream, ToSocketAddrs};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use flate2::{read::ZlibDecoder, write::ZlibEncoder, Compression};
+use game::PlayerMovement;
 use protocol::{decode_play_packet, decode_varint, encode_varint, PlayPacket};
 
 const PROTOCOL_VERSION: i32 = 47;
@@ -16,9 +18,42 @@ pub struct LoginSuccess {
     pub username: String,
 }
 
+/// Thread-safe packet writer cloned from a connected Play session.
+#[derive(Clone)]
+pub struct PlayPacketSender {
+    stream: Arc<Mutex<TcpStream>>,
+    compression_threshold: Option<usize>,
+}
+
+impl PlayPacketSender {
+    fn send(&self, payload: &[u8]) -> Result<(), String> {
+        let mut stream = self.stream.lock().map_err(|_| "packet writer lock poisoned")?;
+        send_packet(&mut stream, payload, self.compression_threshold)
+    }
+
+    /// Send the protocol-47 serverbound Player Position And Look packet.
+    pub fn send_player_movement(&self, movement: PlayerMovement) -> Result<(), String> {
+        let mut packet = vec![0x06];
+        for coordinate in movement.position {
+            packet.extend_from_slice(&coordinate.to_be_bytes());
+        }
+        packet.extend_from_slice(&movement.yaw.to_be_bytes());
+        packet.extend_from_slice(&movement.pitch.to_be_bytes());
+        packet.push(u8::from(movement.on_ground));
+        self.send(&packet)
+    }
+
+    /// Close the underlying TCP connection, including its read side.
+    pub fn shutdown(&self) -> Result<(), String> {
+        let stream = self.stream.lock().map_err(|_| "packet writer lock poisoned")?;
+        stream.shutdown(Shutdown::Both).map_err(|e| format!("closing Minecraft connection: {e}"))
+    }
+}
+
 /// A connected Minecraft Play-state connection. The TCP stream stays open after Login Success.
 pub struct PlaySession {
     stream: TcpStream,
+    writer: PlayPacketSender,
     pub player: LoginSuccess,
     compression_threshold: Option<usize>,
     position: [f64; 3],
@@ -131,12 +166,21 @@ impl PlaySession {
         encode_varint(0, &mut packet); // enabled chat
         packet.push(1); // chat colours
         packet.push(0x7f); // all skin layers
-        send_packet(&mut self.stream, &packet, self.compression_threshold)
+        self.writer.send(&packet)
+    }
+
+    /// Obtain a cloneable packet writer for a dedicated movement thread.
+    pub fn packet_sender(&self) -> PlayPacketSender {
+        self.writer.clone()
     }
 
     /// Current authoritative position after the latest server correction.
     pub fn position(&self) -> [f64; 3] {
         self.position
+    }
+
+    pub fn rotation(&self) -> (f32, f32) {
+        (self.yaw, self.pitch)
     }
 
     /// Read and decode the next serverbound-independent Play packet.
@@ -152,7 +196,7 @@ impl PlaySession {
             PlayPacket::KeepAlive { id } => {
                 let mut response = vec![0x00];
                 encode_varint(*id, &mut response);
-                send_packet(&mut self.stream, &response, self.compression_threshold)?;
+                self.writer.send(&response)?;
             }
             PlayPacket::PlayerPositionLook { x, y, z, yaw, pitch, flags } => {
                 let next = [
@@ -220,8 +264,15 @@ pub fn connect_offline(host: &str, port: u16, username: &str) -> Result<PlaySess
                 let uuid = read_string(&packet, &mut offset)?;
                 let accepted_name = read_string(&packet, &mut offset)?;
                 if offset != packet.len() { return Err("unexpected trailing bytes in Login Success".into()); }
+                let writer_stream = stream.try_clone()
+                    .map_err(|e| format!("cloning Minecraft packet writer: {e}"))?;
+                let writer = PlayPacketSender {
+                    stream: Arc::new(Mutex::new(writer_stream)),
+                    compression_threshold,
+                };
                 return Ok(PlaySession {
                     stream,
+                    writer,
                     player: LoginSuccess { uuid, username: accepted_name },
                     compression_threshold,
                     position: [0.0; 3],
