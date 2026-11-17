@@ -9,6 +9,6 @@ name = "rust-edition"
 path = "src/main.rs"
 
 [dependencies]
-rust-edition-protocol = { path = "../protocol" }
-rust-edition-game = { path = "../game" }
-rust-edition-renderer = { path = "../renderer" }
+protocol = { package = "rust-edition-protocol", path = "../protocol" }
+game = { package = "rust-edition-game", path = "../game" }
+renderer = { package = "rust-edition-renderer", path = "../renderer" }
