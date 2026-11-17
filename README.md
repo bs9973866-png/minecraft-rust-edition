@@ -93,3 +93,14 @@ cargo test --workspace
 ## Compatibility note
 
 This project is an early prototype. Full gameplay, authentication, real server chunk decoding, rendering parity, and broad server compatibility remain unimplemented and must be verified against real 1.8.9 servers.
+
+
+### Offline-mode server login prototype
+
+The client also has a protocol-47 login handshake test:
+
+```powershell
+cargo run -p rust-edition-client -- --login localhost:25565 --username Player
+```
+
+This only works with servers configured for offline-mode. It verifies the Login Start / Login Success exchange; it does **not** yet enter the world or implement play-state packets. Online-mode encryption, compression, and authenticated Microsoft login are not implemented.
