@@ -2,7 +2,7 @@ use eframe::egui;
 use serde::{Deserialize, Serialize};
 use std::{
     fs,
-    path::{Path, PathBuf},
+    path::PathBuf,
     process::Command,
 };
 
@@ -148,7 +148,7 @@ fn find_client_executable() -> Option<PathBuf> {
         std::env::current_dir().ok()?.join("target").join("release").join(exe_name),
     ];
     candidates.retain(|path| path.is_file());
-    candidates.into_iter().map(|path| fs::canonicalize(&path).unwrap_or(path)).find(|path| Path::new(path).is_file())
+    candidates.into_iter().map(|path| fs::canonicalize(&path).unwrap_or(path)).find(|path| path.is_file())
 }
 
 fn main() -> eframe::Result<()> {
