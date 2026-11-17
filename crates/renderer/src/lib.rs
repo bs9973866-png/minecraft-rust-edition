@@ -481,9 +481,15 @@ use wgpu::util::DeviceExt;
 
 /// Opens the client window with continuous first-person movement and mouse look.
 pub fn run_window() -> Result<(), String> {
+    run_window_with_username("Player")
+}
+
+/// Opens the game window and shows the selected offline profile in its title.
+pub fn run_window_with_username(username: &str) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("creating event loop: {e}"))?;
+    let title = format!("Minecraft 1.8.9 — Rust Edition | {username} | WASD + mouse");
     let window = Arc::new(WindowBuilder::new()
-        .with_title("Minecraft 1.8.9 — Rust Edition | WASD + mouse")
+        .with_title(&title)
         .with_inner_size(PhysicalSize::new(1280, 720))
         .build(&event_loop).map_err(|e| format!("creating window: {e}"))?);
     let mut gpu = pollster::block_on(GpuState::new(window.clone()))?;
