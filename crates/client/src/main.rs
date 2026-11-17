@@ -460,4 +460,16 @@ mod tests {
         assert!(!valid_offline_username("имя"));
         assert!(!valid_offline_username("name_that_is_too_long"));
     }
+
+    #[test]
+    fn flattens_chat_json_and_nested_extra_components() {
+        let json = r#"{"text":"[VIP] ","extra":[{"text":"Player"},{"text":": hello"}]}"#;
+        assert_eq!(super::plain_chat_text(json), "[VIP] Player: hello");
+    }
+
+    #[test]
+    fn keeps_translation_key_visible_when_no_language_table_exists() {
+        let json = r#"{"translate":"chat.type.text","with":["Player","hello"]}"#;
+        assert_eq!(super::plain_chat_text(json), "chat.type.text (Playerhello)");
+    }
 }
