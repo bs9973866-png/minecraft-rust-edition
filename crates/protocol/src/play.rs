@@ -11,10 +11,19 @@ pub enum PlayPacket {
     UpdateHealth { health: f32, food: i32, food_saturation: f32 },
     PlayerPositionLook { x: f64, y: f64, z: f64, yaw: f32, pitch: f32, flags: u8 },
     ChunkData { x: i32, z: i32, ground_up: bool, primary_bitmap: u16, data: Vec<u8> },
+    ChunkDataBulk { sky_light: bool, chunks: Vec<BulkChunkColumn> },
     BlockChange { x: i32, y: i32, z: i32, state: u16 },
     MultiBlockChange { chunk_x: i32, chunk_z: i32, changes: Vec<BlockChange> },
     KeepAlive { id: i32 },
     Unknown { id: i32, payload: Vec<u8> },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BulkChunkColumn {
+    pub x: i32,
+    pub z: i32,
+    pub primary_bitmap: u16,
+    pub data: Vec<u8>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -106,6 +115,42 @@ pub fn decode_play_packet(payload: &[u8]) -> Result<PlayPacket, String> {
         0x08 => PlayPacket::PlayerPositionLook {
             x: r.f64()?, y: r.f64()?, z: r.f64()?, yaw: r.f32()?, pitch: r.f32()?, flags: r.u8()?,
         },
+        0x26 => {
+            let sky_light = r.bool()?;
+            let count = r.varint()?;
+            if !(0..=1024).contains(&count) {
+                return Err("invalid map-chunk-bulk column count".into());
+            }
+            let mut metadata = Vec::with_capacity(count as usize);
+            for _ in 0..count {
+                let x = r.i32()?;
+                let z = r.i32()?;
+                let primary_bitmap = u16::from_be_bytes(r.take(2)?.try_into().unwrap());
+                metadata.push((x, z, primary_bitmap));
+            }
+
+            let mut chunks = Vec::with_capacity(count as usize);
+            for (x, z, primary_bitmap) in metadata {
+                let sections = primary_bitmap.count_ones() as usize;
+                let section_bytes = 8192_usize
+                    .checked_add(2048)
+                    .and_then(|size| size.checked_add(if sky_light { 2048 } else { 0 }))
+                    .ok_or("bulk chunk section size overflow")?;
+                let data_len = sections.checked_mul(section_bytes)
+                    .and_then(|size| size.checked_add(256))
+                    .ok_or("bulk chunk data size overflow")?;
+                if data_len > 1_048_576 {
+                    return Err("bulk chunk exceeds safety limit".into());
+                }
+                chunks.push(BulkChunkColumn {
+                    x,
+                    z,
+                    primary_bitmap,
+                    data: r.take(data_len)?.to_vec(),
+                });
+            }
+            PlayPacket::ChunkDataBulk { sky_light, chunks }
+        }
         0x22 => {
             let chunk_x = r.i32()?;
             let chunk_z = r.i32()?;
@@ -226,6 +271,23 @@ mod tests {
         p.extend_from_slice(&[9, 8, 7, 6]);
         assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::ChunkData {
             x: -2, z: 5, ground_up: true, primary_bitmap: 3, data: vec![9, 8, 7, 6],
+        });
+    }
+
+    #[test]
+    fn decodes_bulk_chunk_packet_with_shared_skylight_flag() {
+        let mut p = vec![0x26, 1]; // sky light sent
+        encode_varint(1, &mut p);
+        p.extend_from_slice(&(-4_i32).to_be_bytes());
+        p.extend_from_slice(&7_i32.to_be_bytes());
+        p.extend_from_slice(&1_u16.to_be_bytes());
+        p.extend_from_slice(&vec![0_u8; 8192 + 2048 + 2048 + 256]);
+        assert_eq!(decode_play_packet(&p).unwrap(), PlayPacket::ChunkDataBulk {
+            sky_light: true,
+            chunks: vec![BulkChunkColumn {
+                x: -4, z: 7, primary_bitmap: 1,
+                data: vec![0; 8192 + 2048 + 2048 + 256],
+            }],
         });
     }
 
