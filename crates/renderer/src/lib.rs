@@ -1,8 +1,8 @@
 //! Window and GPU rendering backend for Rust Edition.
 //! Draws a seed-generated voxel landscape with a movable first-person-style camera.
 
-use std::{collections::{HashMap, HashSet}, sync::{Arc, mpsc::{Receiver, TryRecvError}}, time::Instant};
-use game::{BlockPos, ChunkPos, Hotbar, PlayerPhysics, ServerEvent, World, CHUNK_WIDTH};
+use std::{collections::{HashMap, HashSet}, sync::{Arc, mpsc::{Receiver, Sender, TryRecvError}}, time::{Duration, Instant}};
+use game::{BlockPos, ChunkPos, Hotbar, PlayerMovement, PlayerPhysics, ServerEvent, World, CHUNK_WIDTH};
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
@@ -78,9 +78,11 @@ impl Camera {
         self.pitch = (self.pitch - delta_y as f32 * sensitivity).clamp(-1.54, 1.54);
     }
 
-    fn teleport(&mut self, feet_position: [f32; 3]) {
+    fn teleport(&mut self, feet_position: [f32; 3], yaw: f32, pitch: f32) {
         self.physics.teleport(feet_position);
         self.position = Vec3::from_array(feet_position) + Vec3::Y * 1.62;
+        self.yaw = yaw;
+        self.pitch = pitch.clamp(-1.54, 1.54);
     }
 
     fn update_movement(&mut self, world: &World, dt: f32, keys: &HashSet<KeyCode>, jump_pressed: bool) {
@@ -508,20 +510,22 @@ pub fn run_window() -> Result<(), String> {
 
 /// Opens the game window and shows the selected offline profile in its title.
 pub fn run_window_with_username(username: &str) -> Result<(), String> {
-    run_window_internal(username, None)
+    run_window_internal(username, None, None)
 }
 
 /// Opens a server-backed window. Incoming chunk/teleport events are applied on the render thread.
 pub fn run_window_with_server_events(
     username: &str,
     events: Receiver<ServerEvent>,
+    movement_tx: Sender<PlayerMovement>,
 ) -> Result<(), String> {
-    run_window_internal(username, Some(events))
+    run_window_internal(username, Some(events), Some(movement_tx))
 }
 
 fn run_window_internal(
     username: &str,
     mut server_events: Option<Receiver<ServerEvent>>,
+    mut movement_tx: Option<Sender<PlayerMovement>>,
 ) -> Result<(), String> {
     let event_loop = EventLoop::new().map_err(|e| format!("creating event loop: {e}"))?;
     let title = format!("Minecraft 1.8.9 — Rust Edition | {username} | WASD + mouse");
@@ -538,6 +542,8 @@ fn run_window_internal(
     let mut pressed_keys = HashSet::new();
     let mut jump_requested = false;
     let mut last_frame = Instant::now();
+    let mut last_server_movement = Instant::now();
+    let mut server_position_known = server_events.is_none();
     event_loop.set_control_flow(ControlFlow::Poll);
     window.request_redraw();
     let result = event_loop.run(move |event, target| match event {
@@ -628,8 +634,9 @@ fn run_window_internal(
                                 gpu.rebuild_chunk_column_and_neighbors(chunk);
                             }
                         }
-                        Ok(ServerEvent::Teleport(position)) => {
-                            gpu.camera.teleport(position);
+                        Ok(ServerEvent::Teleport { position, yaw, pitch }) => {
+                            gpu.camera.teleport(position, yaw, pitch);
+                            server_position_known = true;
                             gpu.update_camera();
                         }
                         Err(TryRecvError::Empty | TryRecvError::Disconnected) => break,
@@ -642,6 +649,23 @@ fn run_window_internal(
             gpu.camera.update_movement(&gpu.world, dt, &pressed_keys, jump_requested);
             jump_requested = false;
             gpu.update_camera();
+
+            // Send movement at 20 Hz, after the first authoritative server teleport.
+            if server_position_known && now.duration_since(last_server_movement) >= Duration::from_millis(50) {
+                if let Some(sender) = movement_tx.as_ref() {
+                    let position = gpu.camera.physics.position();
+                    let movement = PlayerMovement {
+                        position: position.map(f64::from),
+                        yaw: gpu.camera.yaw,
+                        pitch: gpu.camera.pitch,
+                        on_ground: gpu.camera.physics.on_ground(),
+                    };
+                    if sender.send(movement).is_err() {
+                        movement_tx = None;
+                    }
+                }
+                last_server_movement = now;
+            }
             window.request_redraw();
         }
         _ => {}
