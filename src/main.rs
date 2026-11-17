@@ -83,6 +83,7 @@ fn print_play_event(event: PlayEvent, world: &World) {
             "[WINDOW] transaction={} accepted={}",
             data.action_number, data.accepted
         ),
+        PlayEvent::Entity(entity) => println!("[ENTITY] {entity:?}; tracked={}", world.entity_count()),
         PlayEvent::KeepAliveResponded(_) => {}
         PlayEvent::Unknown { packet_id, payload } => println!(
             "[PACKET] unhandled Play packet 0x{packet_id:02X} ({} payload bytes)",

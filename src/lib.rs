@@ -4,6 +4,7 @@
 //! It provides protocol framing, connection status probing, world storage, and math
 //! primitives that can be extended into a complete client.
 
+pub mod entity;
 pub mod math;
 pub mod nbt;
 pub mod protocol;

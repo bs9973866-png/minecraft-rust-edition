@@ -1,6 +1,7 @@
 //! Sparse world storage for the 16x256x16 chunk layout used by Minecraft 1.8.9.
 
 use std::collections::HashMap;
+use crate::entity::{EntityEvent, EntityState};
 use crate::math::Vec3;
 
 pub const WORLD_HEIGHT: i32 = 256;
@@ -111,7 +112,10 @@ impl Chunk {
 }
 
 #[derive(Clone, Debug, Default)]
-pub struct World { chunks: HashMap<ChunkPos, Chunk> }
+pub struct World {
+    chunks: HashMap<ChunkPos, Chunk>,
+    entities: HashMap<i32, EntityState>,
+}
 impl World {
     pub fn new() -> Self { Self::default() }
     pub fn chunk_count(&self) -> usize { self.chunks.len() }
@@ -132,6 +136,46 @@ impl World {
         if chunk_is_empty { self.chunks.remove(&chunk_pos); }
     }
     pub fn remove_chunk(&mut self, position: ChunkPos) -> Option<Chunk> { self.chunks.remove(&position) }
+
+    /// Number of currently tracked server entities.
+    pub fn entity_count(&self) -> usize { self.entities.len() }
+
+    pub fn get_entity(&self, entity_id: i32) -> Option<&EntityState> { self.entities.get(&entity_id) }
+
+    pub fn clear_entities(&mut self) { self.entities.clear(); }
+
+    /// Apply one authoritative entity event from the protocol-47 server stream.
+    pub fn apply_entity_event(&mut self, event: EntityEvent) {
+        match event {
+            EntityEvent::Spawn(entity) => { self.entities.insert(entity.entity_id, entity); }
+            EntityEvent::RelativeMove { entity_id, delta, rotation, on_ground } => {
+                if let Some(entity) = self.entities.get_mut(&entity_id) {
+                    for axis in 0..3 { entity.position[axis] += delta[axis]; }
+                    if let Some((yaw, pitch)) = rotation { entity.yaw = yaw; entity.pitch = pitch; }
+                    entity.on_ground = on_ground;
+                }
+            }
+            EntityEvent::Teleport { entity_id, position, yaw, pitch, on_ground } => {
+                if let Some(entity) = self.entities.get_mut(&entity_id) {
+                    entity.position = position;
+                    entity.yaw = yaw;
+                    entity.pitch = pitch;
+                    entity.on_ground = on_ground;
+                }
+            }
+            EntityEvent::HeadLook { entity_id, yaw } => {
+                if let Some(entity) = self.entities.get_mut(&entity_id) { entity.head_yaw = yaw; }
+            }
+            EntityEvent::Metadata { entity_id, entries } => {
+                if let Some(entity) = self.entities.get_mut(&entity_id) {
+                    entity.metadata.extend(entries);
+                }
+            }
+            EntityEvent::Destroy(entity_ids) => {
+                for entity_id in entity_ids { self.entities.remove(&entity_id); }
+            }
+        }
+    }
     /// Apply many decoded columns in wire order.
     pub fn apply_chunk_batch<I>(&mut self, chunks: I) -> Result<(), WorldError>
     where

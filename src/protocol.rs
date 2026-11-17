@@ -11,6 +11,7 @@ use flate2::write::ZlibEncoder;
 use flate2::Compression;
 
 use crate::nbt::{self, NamedTag, Tag};
+use crate::entity::{EntityEvent, EntityKind, EntityMetadataValue, EntityState};
 use crate::world::{BlockPos, BlockState, ChunkColumnData, ChunkPos, ChunkSectionData, World};
 
 pub const PROTOCOL_VERSION: i32 = 47;
@@ -267,6 +268,177 @@ pub fn block_placement_payload(position: BlockPos, face: u8, item: Option<&ItemS
 pub fn encode_block_placement(position: BlockPos, face: u8, item: Option<&ItemStack>, cursor: [f32; 3]) -> Result<Vec<u8>, ProtocolError> {
     Ok(encode_packet(0x08, &block_placement_payload(position, face, item, cursor)?))
 }
+fn decode_angle(value: i8) -> f32 {
+    f32::from(value as u8) * (360.0 / 256.0)
+}
+
+fn decode_velocity(value: i16) -> f64 {
+    f64::from(value) / 8000.0
+}
+
+fn read_entity_metadata(cursor: &mut PacketCursor<'_>) -> Result<std::collections::BTreeMap<u8, EntityMetadataValue>, ProtocolError> {
+    let mut entries = std::collections::BTreeMap::new();
+    let mut count = 0_usize;
+    loop {
+        let header = cursor.read_u8()?;
+        if header == 0x7f { break; }
+        count += 1;
+        if count > 32 { return Err(ProtocolError::InvalidBlockUpdate("entity metadata has more than 32 entries")); }
+        let value_type = header >> 5;
+        let index = header & 0x1f;
+        let value = match value_type {
+            0 => EntityMetadataValue::Byte(cursor.read_i8()?),
+            1 => EntityMetadataValue::Short(cursor.read_i16()?),
+            2 => EntityMetadataValue::Int(cursor.read_i32()?),
+            3 => EntityMetadataValue::Float(cursor.read_f32()?),
+            4 => EntityMetadataValue::String(cursor.read_string(32_767)?),
+            5 => EntityMetadataValue::ItemStack(cursor.read_item_stack()?),
+            6 => EntityMetadataValue::Coordinates([cursor.read_i32()?, cursor.read_i32()?, cursor.read_i32()?]),
+            _ => return Err(ProtocolError::InvalidBlockUpdate("unknown entity metadata value type")),
+        };
+        entries.insert(index, value);
+    }
+    Ok(entries)
+}
+
+fn finish_entity_packet(cursor: &PacketCursor<'_>) -> Result<(), ProtocolError> {
+    if cursor.is_empty() { Ok(()) } else { Err(ProtocolError::InvalidBlockUpdate("trailing bytes in entity packet")) }
+}
+
+fn decode_entity_position(cursor: &mut PacketCursor<'_>) -> Result<[f64; 3], ProtocolError> {
+    Ok([
+        f64::from(cursor.read_i32()?) / 32.0,
+        f64::from(cursor.read_i32()?) / 32.0,
+        f64::from(cursor.read_i32()?) / 32.0,
+    ])
+}
+
+fn decode_entity_uuid(cursor: &mut PacketCursor<'_>) -> Result<String, ProtocolError> {
+    let bytes = cursor.read_bytes(16)?;
+    let mut most = [0_u8; 8];
+    let mut least = [0_u8; 8];
+    most.copy_from_slice(&bytes[..8]);
+    least.copy_from_slice(&bytes[8..]);
+    let most = u64::from_be_bytes(most);
+    let least = u64::from_be_bytes(least);
+    Ok(format!("{:08x}-{:04x}-{:04x}-{:04x}-{:012x}",
+        (most >> 32) as u32, (most >> 16) as u16, most as u16,
+        (least >> 48) as u16, least & 0x0000_ffff_ffff_ffff))
+}
+
+/// Decode S0C Spawn Player (0x0C).
+pub fn decode_spawn_player(payload: &[u8]) -> Result<EntityState, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let entity_id = cursor.read_varint()?;
+    let uuid = decode_entity_uuid(&mut cursor)?;
+    let position = decode_entity_position(&mut cursor)?;
+    let yaw = decode_angle(cursor.read_i8()?);
+    let pitch = decode_angle(cursor.read_i8()?);
+    let held_item = cursor.read_i16()?;
+    let metadata = read_entity_metadata(&mut cursor)?;
+    finish_entity_packet(&cursor)?;
+    Ok(EntityState {
+        entity_id, kind: EntityKind::Player { uuid, held_item }, position,
+        yaw, pitch, head_yaw: yaw, velocity: [0.0; 3], on_ground: false, metadata,
+    })
+}
+
+/// Decode S0F Spawn Mob (0x0F).
+pub fn decode_spawn_mob(payload: &[u8]) -> Result<EntityState, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let entity_id = cursor.read_varint()?;
+    let mob_type = cursor.read_u8()?;
+    let position = decode_entity_position(&mut cursor)?;
+    let yaw = decode_angle(cursor.read_i8()?);
+    let pitch = decode_angle(cursor.read_i8()?);
+    let head_yaw = decode_angle(cursor.read_i8()?);
+    let velocity = [decode_velocity(cursor.read_i16()?), decode_velocity(cursor.read_i16()?), decode_velocity(cursor.read_i16()?)];
+    let metadata = read_entity_metadata(&mut cursor)?;
+    finish_entity_packet(&cursor)?;
+    Ok(EntityState {
+        entity_id, kind: EntityKind::Mob { mob_type }, position, yaw, pitch, head_yaw, velocity, on_ground: false, metadata,
+    })
+}
+
+/// Decode S0E Spawn Object (0x0E). Velocity shorts are only present when data > 0.
+pub fn decode_spawn_object(payload: &[u8]) -> Result<EntityState, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let entity_id = cursor.read_varint()?;
+    let object_type = cursor.read_u8()?;
+    let position = decode_entity_position(&mut cursor)?;
+    let pitch = decode_angle(cursor.read_i8()?);
+    let yaw = decode_angle(cursor.read_i8()?);
+    let data = cursor.read_i32()?;
+    let velocity = if data > 0 {
+        [decode_velocity(cursor.read_i16()?), decode_velocity(cursor.read_i16()?), decode_velocity(cursor.read_i16()?)]
+    } else { [0.0; 3] };
+    finish_entity_packet(&cursor)?;
+    Ok(EntityState {
+        entity_id, kind: EntityKind::Object { object_type, data }, position, yaw, pitch, head_yaw: yaw, velocity, on_ground: false,
+        metadata: std::collections::BTreeMap::new(),
+    })
+}
+
+/// Decode S13 Destroy Entities (0x13).
+pub fn decode_destroy_entities(payload: &[u8]) -> Result<Vec<i32>, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let count = cursor.read_varint()?;
+    if !(0..=4096).contains(&count) { return Err(ProtocolError::InvalidBlockUpdate("destroy entity count must be between 0 and 4096")); }
+    let mut ids = Vec::with_capacity(count as usize);
+    for _ in 0..count { ids.push(cursor.read_varint()?); }
+    finish_entity_packet(&cursor)?;
+    Ok(ids)
+}
+
+fn decode_entity_relative(payload: &[u8], has_position: bool, has_rotation: bool) -> Result<EntityEvent, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let entity_id = cursor.read_varint()?;
+    let delta = if has_position {
+        [f64::from(cursor.read_i8()?) / 32.0, f64::from(cursor.read_i8()?) / 32.0, f64::from(cursor.read_i8()?) / 32.0]
+    } else { [0.0; 3] };
+    let rotation = if has_rotation { Some((decode_angle(cursor.read_i8()?), decode_angle(cursor.read_i8()?))) } else { None };
+    let ground = cursor.read_u8()?;
+    if ground > 1 { return Err(ProtocolError::InvalidBlockUpdate("invalid entity on-ground flag")); }
+    finish_entity_packet(&cursor)?;
+    Ok(EntityEvent::RelativeMove { entity_id, delta, rotation, on_ground: ground != 0 })
+}
+
+/// Decode S15 relative position, S16 rotation, or S17 position + rotation.
+pub fn decode_entity_relative_move(payload: &[u8]) -> Result<EntityEvent, ProtocolError> { decode_entity_relative(payload, true, false) }
+pub fn decode_entity_look(payload: &[u8]) -> Result<EntityEvent, ProtocolError> { decode_entity_relative(payload, false, true) }
+pub fn decode_entity_look_move(payload: &[u8]) -> Result<EntityEvent, ProtocolError> { decode_entity_relative(payload, true, true) }
+
+/// Decode S18 Entity Teleport (0x18).
+pub fn decode_entity_teleport(payload: &[u8]) -> Result<EntityEvent, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let entity_id = cursor.read_varint()?;
+    let position = decode_entity_position(&mut cursor)?;
+    let yaw = decode_angle(cursor.read_i8()?);
+    let pitch = decode_angle(cursor.read_i8()?);
+    let ground = cursor.read_u8()?;
+    if ground > 1 { return Err(ProtocolError::InvalidBlockUpdate("invalid entity on-ground flag")); }
+    finish_entity_packet(&cursor)?;
+    Ok(EntityEvent::Teleport { entity_id, position, yaw, pitch, on_ground: ground != 0 })
+}
+
+/// Decode S19 Entity Head Look (0x19).
+pub fn decode_entity_head_look(payload: &[u8]) -> Result<EntityEvent, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let entity_id = cursor.read_varint()?;
+    let yaw = decode_angle(cursor.read_i8()?);
+    finish_entity_packet(&cursor)?;
+    Ok(EntityEvent::HeadLook { entity_id, yaw })
+}
+
+/// Decode S1C Entity Metadata (0x1C).
+pub fn decode_entity_metadata(payload: &[u8]) -> Result<EntityEvent, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let entity_id = cursor.read_varint()?;
+    let entries = read_entity_metadata(&mut cursor)?;
+    finish_entity_packet(&cursor)?;
+    Ok(EntityEvent::Metadata { entity_id, entries })
+}
+
 /// Encode a packet body, including the packet ID but excluding the outer frame length.
 pub fn encode_packet(packet_id: i32, payload: &[u8]) -> Vec<u8> {
     let mut body = Vec::with_capacity(5 + payload.len());
@@ -878,6 +1050,7 @@ pub fn decode_respawn(payload: &[u8]) -> Result<RespawnInfo, ProtocolError> {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum PlayEvent {
+    Entity(EntityEvent),
     JoinGame(JoinGameInfo),
     ChatMessage(String),
     TimeUpdate(TimeUpdate),
@@ -1002,6 +1175,16 @@ impl PlaySession {
                 }
                 Ok(PlayEvent::ConfirmTransaction(data))
             }
+            0x0C => Ok(PlayEvent::Entity(EntityEvent::Spawn(decode_spawn_player(payload)?))),
+            0x0E => Ok(PlayEvent::Entity(EntityEvent::Spawn(decode_spawn_object(payload)?))),
+            0x0F => Ok(PlayEvent::Entity(EntityEvent::Spawn(decode_spawn_mob(payload)?))),
+            0x13 => Ok(PlayEvent::Entity(EntityEvent::Destroy(decode_destroy_entities(payload)?))),
+            0x15 => Ok(PlayEvent::Entity(decode_entity_relative_move(payload)?)),
+            0x16 => Ok(PlayEvent::Entity(decode_entity_look(payload)?)),
+            0x17 => Ok(PlayEvent::Entity(decode_entity_look_move(payload)?)),
+            0x18 => Ok(PlayEvent::Entity(decode_entity_teleport(payload)?)),
+            0x19 => Ok(PlayEvent::Entity(decode_entity_head_look(payload)?)),
+            0x1C => Ok(PlayEvent::Entity(decode_entity_metadata(payload)?)),
             0x09 => {
                 let slot = decode_held_item_change(payload)?;
                 self.selected_hotbar_slot = slot;
@@ -1093,6 +1276,10 @@ impl PlaySession {
         let event = self.read_event()?;
         let result = match &event {
             PlayEvent::Chunk(chunk) => world.apply_chunk_data(chunk.clone()),
+            PlayEvent::Entity(entity_event) => {
+                world.apply_entity_event(entity_event.clone());
+                return Ok(event);
+            }
             PlayEvent::ChunkBulk(bulk) => world.apply_chunk_batch(bulk.columns.clone()),
             PlayEvent::BlockChange(change) => {
                 world.apply_block_change(change.position, change.state);
