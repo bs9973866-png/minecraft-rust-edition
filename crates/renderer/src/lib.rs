@@ -2,7 +2,7 @@
 //! Draws a seed-generated voxel landscape with a movable first-person-style camera.
 
 use std::{collections::{HashMap, HashSet}, sync::{Arc, mpsc::{Receiver, Sender, TryRecvError}}, time::{Duration, Instant}};
-use game::{BlockPos, ChunkPos, DigStatus, Hotbar, PlayerMovement, PlayerPhysics, ServerAction, ServerEvent, World, CHUNK_WIDTH};
+use game::{BlockPos, ChunkPos, DigStatus, Hotbar, InventoryItem, PlayerMovement, PlayerPhysics, ServerAction, ServerEvent, World, CHUNK_WIDTH};
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
@@ -198,6 +198,7 @@ struct GpuState {
     overlay_buffer: wgpu::Buffer,
     overlay_vertex_count: u32,
     hotbar: Hotbar,
+    server_hotbar: [Option<InventoryItem>; 9],
     world: World,
 }
 
@@ -388,7 +389,7 @@ impl GpuState {
         Ok(Self { surface, device, queue, config, pipeline, chunk_meshes,
             depth_view, camera, camera_buffer, camera_bind_group,
             overlay_pipeline, overlay_buffer, overlay_vertex_count: overlay_vertices.len() as u32,
-            hotbar, world })
+            hotbar, server_hotbar: std::array::from_fn(|_| None), world })
     }
 
     fn refresh_overlay(&mut self) {
@@ -646,11 +647,12 @@ fn run_window_internal(
                             let direction = gpu.camera.forward().to_array();
                             if let Some(hit) = gpu.world.raycast(origin, direction, 6.0) {
                                 let face = protocol_face_from_normal(hit.face);
-                                // Inventory sync is not implemented; do not invent a held item.
+                                let held_item = gpu.server_hotbar[gpu.hotbar.selected_index()].clone();
                                 let _ = sender.send(ServerAction::UseBlock {
                                     position: hit.block,
                                     face,
                                     cursor: [8, 8, 8],
+                                    held_item,
                                 });
                             }
                         } else {
@@ -714,6 +716,23 @@ fn run_window_internal(
                             }
                             for chunk in touched {
                                 gpu.rebuild_chunk_column_and_neighbors(chunk);
+                            }
+                        }
+                        Ok(ServerEvent::InventorySlot { window_id, slot, item }) => {
+                            if window_id == 0 && (36..=44).contains(&slot) {
+                                gpu.server_hotbar[(slot - 36) as usize] = item;
+                            }
+                        }
+                        Ok(ServerEvent::WindowItems { window_id, items }) => {
+                            if window_id == 0 {
+                                for index in 0..9 {
+                                    gpu.server_hotbar[index] = items.get(36 + index).cloned().flatten();
+                                }
+                            }
+                        }
+                        Ok(ServerEvent::HeldItemChange { slot }) => {
+                            if gpu.hotbar.select(slot as usize) {
+                                gpu.refresh_overlay();
                             }
                         }
                         Ok(ServerEvent::Teleport { position, yaw, pitch }) => {
