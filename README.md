@@ -23,20 +23,22 @@ Early development — repository scaffold and architecture are being established
 - `crates/renderer` — GPU rendering and resource management.
 - `crates/client` — desktop application and orchestration.
 
-## Current milestone: editable voxel test world
+## Current milestone: first-person voxel prototype and HUD
 
 The client now uses a separate sparse world model in the game crate. It supports block coordinates, adding/removing solid blocks, and voxel DDA raycasting. The renderer builds visible cube faces from that world and updates its GPU vertex buffer after edits. First-person controls now use continuous time-based movement while keys are held, and relative mouse motion rotates the camera with a captured cursor.
 
 Controls in `--window` mode:
 
 - `W`, `A`, `S`, `D`: move horizontally
-- Arrow keys: look around
-- `Space` / `Shift`: move up / down
+- Mouse: look around (cursor is captured)
+- `Space`: jump
+- `1`–`9`: select a hotbar slot
+- Mouse wheel: cycle through hotbar slots
 - Left mouse button: remove the block under the crosshair ray
 - Right mouse button: place a block on the face being targeted
 - `Escape`: close the window
 
-The game crate now includes a basic player AABB, gravity, jumping, and axis-separated block collision. The renderer starts the player above the demo island and uses Space to jump. This is still an early physics prototype: it does not yet include Minecraft's exact movement constants, step-up behavior, swimming, ladders, sprinting, or multiplayer prediction. The current scene remains generated test terrain, not Minecraft's actual chunks, textures, or terrain generator.
+The game crate now includes a nine-slot hotbar data model with selection, wraparound scrolling, and slot state IDs. The renderer draws a crosshair and a nine-slot HUD overlay (temporary placeholder icons, not Minecraft item textures). The game crate also includes a basic player AABB, gravity, jumping, and axis-separated block collision. The renderer starts the player above the demo island and uses Space to jump. This is still an early physics prototype: it does not yet include Minecraft's exact movement constants, step-up behavior, swimming, ladders, sprinting, or multiplayer prediction. The current scene remains generated test terrain, not Minecraft's actual chunks, textures, or terrain generator.
 
 Run it with:
 
