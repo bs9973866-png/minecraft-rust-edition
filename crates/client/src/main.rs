@@ -447,6 +447,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("[KEEP-ALIVE] replied to id={id}"),
                 PlayPacket::Unknown { id, payload } =>
                     println!("[PACKET] unhandled clientbound Play packet 0x{id:02x} ({} bytes)", payload.len()),
+                _ => {}
             }
         }
     }
