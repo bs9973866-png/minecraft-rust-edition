@@ -220,7 +220,7 @@ fn protocol_cursor_from_hit(origin: [f32; 3], direction: [f32; 3], hit: game::Ra
         return [8, 8, 8];
     }
     let block = [hit.block.x as f32, hit.block.y as f32, hit.block.z as f32];
-    let plane = if hit.face[axis] < 0.0 as i32 {
+    let plane = if hit.face[axis] < 0 {
         block[axis]
     } else {
         block[axis] + 1.0
