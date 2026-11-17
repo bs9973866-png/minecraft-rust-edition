@@ -24,9 +24,9 @@ Early playable prototype — the native window, deterministic procedural terrain
 - `crates/client` — game client executable.
 - `crates/launcher` — small desktop launcher with a saved offline nickname.
 
-## Current milestone: procedural terrain and per-chunk GPU meshes
+## Current milestone: protocol-47 Play packet foundation
 
-The game crate now stores world blocks in sparse 16×256×16 chunks (the classic 1.8.9 vertical build range). Chunks are created only when a non-air block is written and reclaimed when emptied. World coordinates map correctly across positive and negative chunk boundaries, and block states are stored per cell. A deterministic, seed-based heightmap generator creates rolling stone/dirt/grass terrain and simple trees, with generation performed in two passes so tree canopies can cross chunk borders. The renderer uses a five-by-five chunk test region, starts the player above the generated surface, colors the basic block types differently, and keeps a separate GPU vertex buffer for each chunk. First-person controls now use continuous time-based movement while keys are held, and relative mouse motion rotates the camera with a captured cursor.
+The protocol crate now has an initial decoder layer for protocol-47 Play packets: Join Game, Chat Message (JSON preserved as text), Time Update, Spawn Position, Update Health, Player Position And Look, Chunk Data (opaque section bytes), Keep Alive, and unknown packet preservation. Known packets are length-checked and tested with small binary fixtures. These decoders are not yet connected to a live Play-state network session; the login command still closes after Login Success.\n\nThe game crate now stores world blocks in sparse 16×256×16 chunks (the classic 1.8.9 vertical build range). Chunks are created only when a non-air block is written and reclaimed when emptied. World coordinates map correctly across positive and negative chunk boundaries, and block states are stored per cell. A deterministic, seed-based heightmap generator creates rolling stone/dirt/grass terrain and simple trees, with generation performed in two passes so tree canopies can cross chunk borders. The renderer uses a five-by-five chunk test region, starts the player above the generated surface, colors the basic block types differently, and keeps a separate GPU vertex buffer for each chunk. First-person controls now use continuous time-based movement while keys are held, and relative mouse motion rotates the camera with a captured cursor.
 
 Controls in `--window` mode:
 
@@ -97,7 +97,7 @@ This project is an early prototype. Full gameplay, authentication, real server c
 
 ### Offline-mode server login prototype
 
-The client also has a protocol-47 login handshake test:
+The client also has a protocol-47 offline-mode login handshake test:
 
 ```powershell
 cargo run -p rust-edition-client -- --login localhost:25565 --username Player
