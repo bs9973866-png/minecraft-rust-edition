@@ -5,6 +5,7 @@
 //! primitives that can be extended into a complete client.
 
 pub mod math;
+pub mod nbt;
 pub mod protocol;
 pub mod world;
 
