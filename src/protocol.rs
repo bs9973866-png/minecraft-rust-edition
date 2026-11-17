@@ -26,6 +26,7 @@ pub enum ProtocolError {
     OnlineModeRequired, LoginRejected(String), InvalidLoginPacket(i32),
     MissingJoinGame, WorldUpdate(String), InvalidHotbarSlot(i32),
     InvalidItemStack(&'static str), Nbt(String), InvalidWindowData(&'static str),
+    InvalidBlockPlacement(&'static str), InvalidChatMessage,
 }
 
 impl fmt::Display for ProtocolError {
@@ -52,6 +53,8 @@ impl fmt::Display for ProtocolError {
             Self::InvalidItemStack(reason) => write!(f, "invalid item stack: {reason}"),
             Self::Nbt(error) => write!(f, "invalid item NBT: {error}"),
             Self::InvalidWindowData(reason) => write!(f, "invalid inventory window data: {reason}"),
+            Self::InvalidBlockPlacement(reason) => write!(f, "invalid block placement: {reason}"),
+            Self::InvalidChatMessage => write!(f, "chat message exceeds 100 characters"),
         }
     }
 }
@@ -224,6 +227,46 @@ impl<'a> PacketCursor<'a> {
     }
 }
 
+/// Serialize a protocol-47 Slot/ItemStack, including optional uncompressed root-compound NBT.
+pub fn write_item_stack(item: Option<&ItemStack>, output: &mut Vec<u8>) -> Result<(), ProtocolError> {
+    let Some(item) = item else {
+        output.extend_from_slice(&(-1_i16).to_be_bytes());
+        return Ok(());
+    };
+    if item.item_id < 0 { return Err(ProtocolError::InvalidItemStack("item ID must be non-negative")); }
+    output.extend_from_slice(&item.item_id.to_be_bytes());
+    output.push(item.count as u8);
+    output.extend_from_slice(&item.damage.to_be_bytes());
+    if let Some(tag) = &item.tag {
+        if !matches!(tag.value, Tag::Compound(_)) {
+            return Err(ProtocolError::InvalidItemStack("item NBT root must be a compound"));
+        }
+        let encoded = nbt::encode(tag).map_err(|error| ProtocolError::Nbt(error.to_string()))?;
+        output.extend_from_slice(&encoded);
+    } else {
+        output.push(0);
+    }
+    Ok(())
+}
+
+/// Build the C08 payload. Face 255 means use the held item without targeting a block.
+pub fn block_placement_payload(position: BlockPos, face: u8, item: Option<&ItemStack>, cursor: [f32; 3]) -> Result<Vec<u8>, ProtocolError> {
+    if face > 5 && face != 255 { return Err(ProtocolError::InvalidBlockPlacement("face must be 0..=5 or 255")); }
+    if cursor.iter().any(|value| !value.is_finite() || !(0.0..=1.0).contains(value)) {
+        return Err(ProtocolError::InvalidBlockPlacement("cursor coordinates must be finite and between 0 and 1"));
+    }
+    let mut payload = Vec::with_capacity(32);
+    payload.extend_from_slice(&encode_packed_position(position).to_be_bytes());
+    payload.push(face);
+    write_item_stack(item, &mut payload)?;
+    for coordinate in cursor { payload.push((coordinate * 16.0) as u8); }
+    Ok(payload)
+}
+
+/// Encode C08 Player Block Placement (protocol 47).
+pub fn encode_block_placement(position: BlockPos, face: u8, item: Option<&ItemStack>, cursor: [f32; 3]) -> Result<Vec<u8>, ProtocolError> {
+    Ok(encode_packet(0x08, &block_placement_payload(position, face, item, cursor)?))
+}
 /// Encode a packet body, including the packet ID but excluding the outer frame length.
 pub fn encode_packet(packet_id: i32, payload: &[u8]) -> Vec<u8> {
     let mut body = Vec::with_capacity(5 + payload.len());
@@ -1018,6 +1061,29 @@ impl PlaySession {
         Ok(())
     }
 
+    /// Send C08 block placement with the server-synchronized selected hotbar stack.
+    pub fn send_block_placement(&mut self, position: BlockPos, face: u8, cursor: [f32; 3]) -> Result<(), ProtocolError> {
+        let slot_index = 36 + self.selected_hotbar_slot as usize;
+        let held = self.inventory_windows.get(&0)
+            .and_then(|slots| slots.get(slot_index))
+            .and_then(Option::as_ref)
+            .cloned();
+        let payload = block_placement_payload(position, face, held.as_ref(), cursor)?;
+        self.stream.write_packet(0x08, &payload)
+    }
+
+    /// Send the C08 item-use variant (no block face targeted).
+    pub fn send_use_item(&mut self) -> Result<(), ProtocolError> {
+        self.send_block_placement(BlockPos::new(-1, -1, -1), 255, [0.0, 0.0, 0.0])
+    }
+
+    /// Send a chat message to the server (C01).
+    pub fn send_chat_message(&mut self, message: &str) -> Result<(), ProtocolError> {
+        if message.chars().count() > 100 { return Err(ProtocolError::InvalidChatMessage); }
+        let mut payload = Vec::with_capacity(message.len() + 5);
+        write_string(message, &mut payload);
+        self.stream.write_packet(0x01, &payload)
+    }
     pub fn send_animation(&mut self) -> Result<(), ProtocolError> {
         self.stream.write_packet(0x0A, &[])
     }
@@ -1946,6 +2012,42 @@ mod tests {
         assert!(!play.open_windows.contains_key(&2));
         assert!(!play.inventory_windows.contains_key(&2));
         server.join().unwrap();
+    }
+    #[test]
+    fn encodes_protocol_47_block_placement_and_item_use() {
+        let item = ItemStack { item_id: 35, count: 64, damage: 14, tag: None };
+        let packet = encode_block_placement(BlockPos::new(-17, 64, 31), 1, Some(&item), [0.5, 1.0, 0.0]).unwrap();
+        let body = read_frame(&mut Cursor::new(packet), 128).unwrap();
+        let mut cursor = PacketCursor::new(&body);
+        assert_eq!(cursor.read_varint().unwrap(), 0x08);
+        assert_eq!(decode_packed_position(cursor.read_i64().unwrap() as u64), BlockPos::new(-17, 64, 31));
+        assert_eq!(cursor.read_u8().unwrap(), 1);
+        assert_eq!(cursor.read_i16().unwrap(), 35);
+        assert_eq!(cursor.read_i8().unwrap(), 64);
+        assert_eq!(cursor.read_i16().unwrap(), 14);
+        assert_eq!([cursor.read_u8().unwrap(), cursor.read_u8().unwrap(), cursor.read_u8().unwrap()], [8, 16, 0]);
+        assert!(cursor.is_empty());
+        let use_packet = encode_block_placement(BlockPos::new(-1, -1, -1), 255, None, [0.0; 3]).unwrap();
+        let use_body = read_frame(&mut Cursor::new(use_packet), 64).unwrap();
+        let mut use_cursor = PacketCursor::new(&use_body);
+        assert_eq!(use_cursor.read_varint().unwrap(), 0x08);
+        assert_eq!(decode_packed_position(use_cursor.read_i64().unwrap() as u64), BlockPos::new(-1, -1, -1));
+        assert_eq!(use_cursor.read_u8().unwrap(), 255);
+        assert_eq!(use_cursor.read_i16().unwrap(), -1);
+        assert_eq!([use_cursor.read_u8().unwrap(), use_cursor.read_u8().unwrap(), use_cursor.read_u8().unwrap()], [0, 0, 0]);
+    }
+
+    #[test]
+    fn item_stack_writer_round_trips_compound_nbt_and_checks_placement_arguments() {
+        let mut contents = std::collections::BTreeMap::new();
+        contents.insert("Name".into(), Tag::String("Test item".into()));
+        let item = ItemStack { item_id: 276, count: 1, damage: 7, tag: Some(NamedTag { name: String::new(), value: Tag::Compound(contents) }) };
+        let mut bytes = Vec::new();
+        write_item_stack(Some(&item), &mut bytes).unwrap();
+        let decoded = PacketCursor::new(&bytes).read_item_stack().unwrap().unwrap();
+        assert_eq!(decoded, item);
+        assert!(encode_block_placement(BlockPos::new(0, 64, 0), 1, None, [1.5, 0.0, 0.0]).is_err());
+        assert!(encode_block_placement(BlockPos::new(0, 64, 0), 7, None, [0.0; 3]).is_err());
     }
     #[test]
     fn parses_host_ports() {
