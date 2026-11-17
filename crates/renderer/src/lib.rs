@@ -2,7 +2,7 @@
 //! Draws a seed-generated voxel landscape with a movable first-person-style camera.
 
 use std::{collections::{HashMap, HashSet}, sync::{Arc, mpsc::{Receiver, Sender, TryRecvError}}, time::{Duration, Instant}};
-use game::{BlockPos, ChunkPos, DigStatus, Hotbar, InventoryItem, PlayerMovement, PlayerPhysics, ServerAction, ServerEvent, World, CHUNK_WIDTH};
+use game::{BlockPos, ChunkPos, DigStatus, EntityState, Hotbar, InventoryItem, PlayerMovement, PlayerPhysics, ServerAction, ServerEvent, World, CHUNK_WIDTH};
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
@@ -199,6 +199,7 @@ struct GpuState {
     overlay_vertex_count: u32,
     hotbar: Hotbar,
     server_hotbar: [Option<InventoryItem>; 9],
+    entities: HashMap<i32, EntityState>,
     world: World,
 }
 
@@ -416,7 +417,7 @@ impl GpuState {
         Ok(Self { surface, device, queue, config, pipeline, chunk_meshes,
             depth_view, camera, camera_buffer, camera_bind_group,
             overlay_pipeline, overlay_buffer, overlay_vertex_count: overlay_vertices.len() as u32,
-            hotbar, server_hotbar: std::array::from_fn(|_| None), world })
+            hotbar, server_hotbar: std::array::from_fn(|_| None), entities: HashMap::new(), world })
     }
 
     fn refresh_overlay(&mut self) {
@@ -793,7 +794,19 @@ fn run_window_internal(
                                 gpu.refresh_overlay();
                             }
                         }
+                        Ok(ServerEvent::EntitySpawn(entity)) | Ok(ServerEvent::EntityTeleport(entity)) => {
+                            gpu.entities.insert(entity.entity_id, entity);
+                        }
+                        Ok(ServerEvent::EntityMove { entity_id, delta, .. }) => {
+                            if let Some(entity) = gpu.entities.get_mut(&entity_id) {
+                                for axis in 0..3 { entity.position[axis] += delta[axis]; }
+                            }
+                        }
+                        Ok(ServerEvent::EntityRemove(entity_ids)) => {
+                            for entity_id in entity_ids { gpu.entities.remove(&entity_id); }
+                        }
                         Ok(ServerEvent::Respawn { dimension }) => {
+                            gpu.entities.clear();
                             gpu.world.clear();
                             gpu.chunk_meshes.clear();
                             server_position_known = false;
