@@ -198,6 +198,46 @@ pub fn read_compressed_frame<R: Read>(reader: &mut R, maximum_uncompressed: usiz
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginSuccess {
+    pub uuid: String,
+    pub username: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LoginDisconnect { pub reason_json: String }
+
+pub fn encode_login_start(username: &str) -> Result<Vec<u8>, ProtocolError> {
+    if username.is_empty() || username.len() > 16 || !username.is_ascii() {
+        return Err(ProtocolError::InvalidBlockUpdate("offline username must be 1-16 ASCII bytes"));
+    }
+    let mut payload = Vec::new();
+    write_string(username, &mut payload);
+    Ok(encode_packet(0x00, &payload))
+}
+
+pub fn decode_login_success(payload: &[u8]) -> Result<LoginSuccess, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let uuid = cursor.read_string(36)?;
+    let username = cursor.read_string(16)?;
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in Login Success")); }
+    Ok(LoginSuccess { uuid, username })
+}
+
+pub fn decode_login_disconnect(payload: &[u8]) -> Result<LoginDisconnect, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let reason_json = cursor.read_string(32_767)?;
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in Login Disconnect")); }
+    Ok(LoginDisconnect { reason_json })
+}
+
+pub fn decode_set_compression(payload: &[u8]) -> Result<usize, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let threshold = cursor.read_varint()?;
+    if threshold < 0 { return Err(ProtocolError::InvalidLength(threshold)); }
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in Set Compression")); }
+    Ok(threshold as usize)
+}
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JoinGameInfo {
     pub entity_id: i32,
     pub game_mode: u8,
@@ -886,6 +926,36 @@ mod tests {
         let mut cursor = PacketCursor::new(&body);
         assert_eq!(cursor.read_varint().unwrap(), 0x31);
         assert_eq!(cursor.read_exact_bytes(64).unwrap(), vec![b'X'; 64]);
+    }
+    #[test]
+    fn login_start_success_disconnect_and_compression_codecs() {
+        let start = encode_login_start("RustPlayer").unwrap();
+        let body = read_frame(&mut Cursor::new(start), 64).unwrap();
+        let mut cursor = PacketCursor::new(&body);
+        assert_eq!(cursor.read_varint().unwrap(), 0);
+        assert_eq!(cursor.read_string(16).unwrap(), "RustPlayer");
+
+        let mut success = Vec::new();
+        write_string("12345678-1234-5678-1234-567812345678", &mut success);
+        write_string("RustPlayer", &mut success);
+        assert_eq!(decode_login_success(&success).unwrap(), LoginSuccess {
+            uuid: "12345678-1234-5678-1234-567812345678".into(), username: "RustPlayer".into()
+        });
+
+        let mut disconnect = Vec::new();
+        write_string(r#"{"text":"Disconnected"}"#, &mut disconnect);
+        assert_eq!(decode_login_disconnect(&disconnect).unwrap().reason_json, r#"{"text":"Disconnected"}"#);
+
+        let mut threshold = Vec::new();
+        write_varint(256, &mut threshold);
+        assert_eq!(decode_set_compression(&threshold).unwrap(), 256);
+    }
+
+    #[test]
+    fn login_start_rejects_invalid_usernames() {
+        assert!(encode_login_start("").is_err());
+        assert!(encode_login_start("name that is too long").is_err());
+        assert!(encode_login_start("Náme").is_err());
     }
     #[test]
     fn parses_host_ports() {

@@ -14,6 +14,7 @@ An independent, clean-room Rust implementation project targeting the **Minecraft
 - World application of chunk batches and authoritative single/multiple block updates.
 - Join Game, Keep Alive, Time Update, Spawn Position, and Player Position & Look codecs with dimension-aware skylight selection.
 - Stateful TCP packet framing that switches between normal and negotiated zlib compression.
+- Offline login-start, Login Success, Login Disconnect, and Set Compression codecs.
 - World application for full and partial chunk updates, with packed light-nibble access.
 - Bounded packet cursor with primitive and UTF-8 string readers.
 - Sparse 16×256×16 chunk/world storage with correct negative-coordinate chunk math.
