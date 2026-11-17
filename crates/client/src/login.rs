@@ -301,7 +301,8 @@ impl PlaySession {
                 response.extend_from_slice(&next_yaw.to_be_bytes());
                 response.extend_from_slice(&next_pitch.to_be_bytes());
                 response.push(1); // onGround
-                send_packet(&mut self.stream, &response, self.compression_threshold)?;
+                // Serialize teleport confirmations with movement/actions on the shared writer.
+                self.writer.send(&response)?;
                 self.position = next;
                 self.yaw = next_yaw;
                 self.pitch = next_pitch;
