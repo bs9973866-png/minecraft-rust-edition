@@ -214,6 +214,33 @@ fn protocol_face_from_normal(normal: [i32; 3]) -> u8 {
     }
 }
 
+fn protocol_cursor_from_hit(origin: [f32; 3], direction: [f32; 3], hit: game::RayHit) -> [u8; 3] {
+    let axis = hit.face.iter().position(|normal| *normal != 0).unwrap_or(1);
+    if direction[axis].abs() <= f32::EPSILON {
+        return [8, 8, 8];
+    }
+    let block = [hit.block.x as f32, hit.block.y as f32, hit.block.z as f32];
+    let plane = if hit.face[axis] < 0.0 as i32 {
+        block[axis]
+    } else {
+        block[axis] + 1.0
+    };
+    let distance = (plane - origin[axis]) / direction[axis];
+    let point = [
+        origin[0] + direction[0] * distance,
+        origin[1] + direction[1] * distance,
+        origin[2] + direction[2] * distance,
+    ];
+    std::array::from_fn(|index| {
+        if hit.face[index] < 0 { 0 }
+        else if hit.face[index] > 0 { 15 }
+        else {
+            let local = (point[index] - block[index]).clamp(0.0, 0.999_999);
+            (local * 16.0).floor() as u8
+        }
+    })
+}
+
 fn push_quad(out: &mut Vec<Vertex>, points: [[f32; 3]; 4], color: [f32; 3]) {
     for index in [0, 1, 2, 0, 2, 3] {
         out.push(Vertex { position: points[index], color });
@@ -515,6 +542,37 @@ impl GpuState {
     }
 }
 
+#[cfg(test)]
+mod interaction_tests {
+    use super::*;
+
+    #[test]
+    fn block_hit_cursor_uses_actual_ray_intersection() {
+        let hit = game::RayHit {
+            block: BlockPos::new(2, 0, 0),
+            face: [-1, 0, 0],
+            distance_steps: 2,
+        };
+        assert_eq!(
+            protocol_cursor_from_hit([0.5, 0.5, 0.5], [1.0, 0.0, 0.0], hit),
+            [0, 8, 8],
+        );
+    }
+
+    #[test]
+    fn block_hit_cursor_clamps_positive_face_to_protocol_maximum() {
+        let hit = game::RayHit {
+            block: BlockPos::new(2, 0, 0),
+            face: [1, 0, 0],
+            distance_steps: 2,
+        };
+        assert_eq!(
+            protocol_cursor_from_hit([3.5, 0.5, 0.5], [-1.0, 0.0, 0.0], hit),
+            [15, 8, 8],
+        );
+    }
+}
+
 use wgpu::util::DeviceExt;
 
 /// Opens the client window with continuous first-person movement and mouse look.
@@ -651,7 +709,7 @@ fn run_window_internal(
                                 let _ = sender.send(ServerAction::UseBlock {
                                     position: hit.block,
                                     face,
-                                    cursor: [8, 8, 8],
+                                    cursor: protocol_cursor_from_hit(origin, direction, hit),
                                     held_item,
                                 });
                             }
