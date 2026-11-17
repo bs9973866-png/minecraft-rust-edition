@@ -6,7 +6,7 @@ A clean-room Rust reimplementation project targeting compatibility with Minecraf
 
 ## Project status
 
-Early playable prototype — the native window, generated voxel test world, first-person movement, basic collision, hotbar HUD, server status ping, sparse chunk storage, and per-chunk GPU meshes are implemented. This is not yet a complete playable Minecraft client and cannot join multiplayer servers.
+Early playable prototype — the native window, deterministic procedural terrain, basic trees, first-person movement, basic collision, hotbar HUD, server status ping, sparse chunk storage, and per-chunk GPU meshes are implemented. This is not yet a complete playable Minecraft client and cannot join multiplayer servers.
 
 ## Goals
 
@@ -23,9 +23,9 @@ Early playable prototype — the native window, generated voxel test world, firs
 - `crates/renderer` — GPU rendering and resource management.
 - `crates/client` — desktop application and orchestration.
 
-## Current milestone: chunk-backed world and per-chunk GPU meshes
+## Current milestone: procedural terrain and per-chunk GPU meshes
 
-The game crate now stores world blocks in sparse 16×256×16 chunks (the classic 1.8.9 vertical build range). Chunks are created only when a non-air block is written and reclaimed when emptied. World coordinates map correctly across positive and negative chunk boundaries, and block states are stored per cell. The world model supports block lookup, adding/removing blocks, iteration, and voxel DDA raycasting. The renderer builds visible cube faces and keeps a separate GPU vertex buffer for each chunk. First-person controls now use continuous time-based movement while keys are held, and relative mouse motion rotates the camera with a captured cursor.
+The game crate now stores world blocks in sparse 16×256×16 chunks (the classic 1.8.9 vertical build range). Chunks are created only when a non-air block is written and reclaimed when emptied. World coordinates map correctly across positive and negative chunk boundaries, and block states are stored per cell. A deterministic, seed-based heightmap generator creates rolling stone/dirt/grass terrain and simple trees, with generation performed in two passes so tree canopies can cross chunk borders. The renderer uses a five-by-five chunk test region, starts the player above the generated surface, colors the basic block types differently, and keeps a separate GPU vertex buffer for each chunk. First-person controls now use continuous time-based movement while keys are held, and relative mouse motion rotates the camera with a captured cursor.
 
 Controls in `--window` mode:
 
@@ -38,7 +38,7 @@ Controls in `--window` mode:
 - Right mouse button: place a block on the face being targeted
 - `Escape`: close the window
 
-The game crate now includes a nine-slot hotbar data model with selection, wraparound scrolling, and slot state IDs. The renderer draws a crosshair and a nine-slot HUD overlay (temporary placeholder icons, not Minecraft item textures). The game crate also includes a basic player AABB, gravity, jumping, and axis-separated block collision. The renderer starts the player above the demo island and uses Space to jump. This is still an early physics prototype: it does not yet include Minecraft's exact movement constants, step-up behavior, swimming, ladders, sprinting, or multiplayer prediction. The renderer now creates a separate GPU vertex buffer for each loaded chunk. Editing a block rebuilds only its owning chunk mesh and the directly adjacent chunk mesh when the edit touches a chunk boundary. Mesh generation enumerates only blocks stored in the target chunk, while face visibility still checks neighboring world blocks. The current scene still uses generated test terrain; it does not yet load real server chunk packets, Minecraft block states/biomes, texture atlases, or the vanilla terrain generator.
+The game crate now includes a nine-slot hotbar data model with selection, wraparound scrolling, and slot state IDs. The renderer draws a crosshair and a nine-slot HUD overlay (temporary placeholder icons, not Minecraft item textures). The game crate also includes a basic player AABB, gravity, jumping, and axis-separated block collision. The renderer starts the player above the generated terrain and uses Space to jump. This is still an early physics prototype: it does not yet include Minecraft's exact movement constants, step-up behavior, swimming, ladders, sprinting, or multiplayer prediction. The renderer now creates a separate GPU vertex buffer for each loaded chunk. Editing a block rebuilds only its owning chunk mesh and the directly adjacent chunk mesh when the edit touches a chunk boundary. Mesh generation enumerates only blocks stored in the target chunk, while face visibility still checks neighboring world blocks. The terrain generator is a small original prototype, not Minecraft's vanilla 1.8.9 generator. It does not yet load real server chunk packets, biomes, texture atlases, caves, ores, water, or the complete vanilla block palette.
 
 Run it with:
 
