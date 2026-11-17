@@ -10,6 +10,7 @@ use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
 use flate2::Compression;
 
+use crate::nbt::{self, NamedTag, Tag};
 use crate::world::{BlockPos, BlockState, ChunkColumnData, ChunkPos, ChunkSectionData, World};
 
 pub const PROTOCOL_VERSION: i32 = 47;
@@ -24,6 +25,7 @@ pub enum ProtocolError {
     UnexpectedPacket { expected: i32, actual: i32 }, InvalidAddress(String),
     OnlineModeRequired, LoginRejected(String), InvalidLoginPacket(i32),
     MissingJoinGame, WorldUpdate(String), InvalidHotbarSlot(i32),
+    InvalidItemStack(&'static str), Nbt(String), InvalidWindowData(&'static str),
 }
 
 impl fmt::Display for ProtocolError {
@@ -47,6 +49,9 @@ impl fmt::Display for ProtocolError {
             Self::MissingJoinGame => write!(f, "received chunk data before Join Game"),
             Self::WorldUpdate(error) => write!(f, "failed to update world: {error}"),
             Self::InvalidHotbarSlot(slot) => write!(f, "hotbar slot must be between 0 and 8, got {slot}"),
+            Self::InvalidItemStack(reason) => write!(f, "invalid item stack: {reason}"),
+            Self::Nbt(error) => write!(f, "invalid item NBT: {error}"),
+            Self::InvalidWindowData(reason) => write!(f, "invalid inventory window data: {reason}"),
         }
     }
 }
@@ -81,6 +86,27 @@ pub fn write_varint(value: i32, output: &mut Vec<u8>) {
         output.push(((remaining & 0x7f) as u8) | 0x80);
         remaining >>= 7;
     }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ItemStack {
+    pub item_id: i16,
+    pub count: i8,
+    pub damage: i16,
+    pub tag: Option<NamedTag>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct SetSlotData {
+    pub window_id: i8,
+    pub slot: i16,
+    pub item: Option<ItemStack>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct WindowItemsData {
+    pub window_id: u8,
+    pub items: Vec<Option<ItemStack>>,
 }
 
 /// A bounded cursor for decoding packet payloads.
@@ -140,6 +166,36 @@ impl<'a> PacketCursor<'a> {
     }
     pub fn read_exact_bytes(&mut self, length: usize) -> Result<Vec<u8>, ProtocolError> {
         Ok(self.read_bytes(length)?.to_vec())
+    }
+    /// Read a protocol-47 Slot/ItemStack, including optional uncompressed root-compound NBT.
+    pub fn read_item_stack(&mut self) -> Result<Option<ItemStack>, ProtocolError> {
+        let item_id = self.read_i16()?;
+        if item_id == -1 { return Ok(None); }
+        if item_id < 0 { return Err(ProtocolError::InvalidItemStack("negative item ID")); }
+        let count = self.read_i8()?;
+        let damage = self.read_i16()?;
+        let tag_id = *self.bytes.get(self.offset).ok_or(ProtocolError::UnexpectedEof)?;
+        let tag = if tag_id == 0 {
+            self.offset += 1;
+            None
+        } else {
+            if tag_id != 10 { return Err(ProtocolError::InvalidItemStack("item NBT root must be a compound or TAG_End")); }
+            let remaining = self.bytes.get(self.offset..).ok_or(ProtocolError::UnexpectedEof)?;
+            let limits = nbt::Limits {
+                max_depth: 64,
+                max_elements: 262_144,
+                max_array_len: 2 * 1024 * 1024,
+                max_string_bytes: 65_535,
+            };
+            let (root, consumed) = nbt::parse_prefix_with_limits(remaining, limits)
+                .map_err(|error| ProtocolError::Nbt(error.to_string()))?;
+            if !matches!(root.value, Tag::Compound(_)) {
+                return Err(ProtocolError::InvalidItemStack("item NBT root is not a compound"));
+            }
+            self.offset = self.offset.checked_add(consumed).ok_or(ProtocolError::UnexpectedEof)?;
+            Some(root)
+        };
+        Ok(Some(ItemStack { item_id, count, damage, tag }))
     }
 }
 
@@ -206,6 +262,26 @@ pub fn read_compressed_frame<R: Read>(reader: &mut R, maximum_uncompressed: usiz
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+/// Decode clientbound S2F Set Slot (0x2F). Window -1, slot -1 updates the carried cursor stack.
+pub fn decode_set_slot(payload: &[u8]) -> Result<SetSlotData, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let data = SetSlotData { window_id: cursor.read_i8()?, slot: cursor.read_i16()?, item: cursor.read_item_stack()? };
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidWindowData("trailing bytes in Set Slot")); }
+    Ok(data)
+}
+
+/// Decode clientbound S30 Window Items (0x30).
+pub fn decode_window_items(payload: &[u8]) -> Result<WindowItemsData, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let window_id = cursor.read_u8()?;
+    let count = cursor.read_i16()?;
+    if !(0..=4096).contains(&count) { return Err(ProtocolError::InvalidWindowData("slot count must be between 0 and 4096")); }
+    let mut items = Vec::with_capacity(count as usize);
+    for _ in 0..count { items.push(cursor.read_item_stack()?); }
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidWindowData("trailing bytes in Window Items")); }
+    Ok(WindowItemsData { window_id, items })
+}
+
 pub struct LoginSuccess {
     pub uuid: String,
     pub username: String,
@@ -700,6 +776,8 @@ pub enum PlayEvent {
     BlockChange(BlockChange),
     MultiBlockChange(MultiBlockChange),
     HeldItemChange(u8),
+    SetSlot(SetSlotData),
+    WindowItems(WindowItemsData),
     KeepAliveResponded(i32),
     Unknown { packet_id: i32, payload: Vec<u8> },
 }
@@ -711,11 +789,13 @@ pub struct PlaySession {
     pub entity_id: i32,
     pub dimension: Option<i8>,
     pub selected_hotbar_slot: u8,
+    pub inventory_windows: std::collections::HashMap<i16, Vec<Option<ItemStack>>>,
+    pub carried_item: Option<ItemStack>,
 }
 
 impl LoginSession {
     pub fn into_play(self) -> PlaySession {
-        PlaySession { identity: self.identity, stream: self.stream, entity_id: 0, dimension: None, selected_hotbar_slot: 0 }
+        PlaySession { identity: self.identity, stream: self.stream, entity_id: 0, dimension: None, selected_hotbar_slot: 0, inventory_windows: std::collections::HashMap::new(), carried_item: None }
     }
 }
 
@@ -754,6 +834,23 @@ impl PlaySession {
                 Ok(PlayEvent::Respawn(respawn))
             }
             0x08 => Ok(PlayEvent::PlayerPositionLook(decode_player_position_look(payload)?)),
+            0x2F => {
+                let data = decode_set_slot(payload)?;
+                if data.window_id == -1 && data.slot == -1 {
+                    self.carried_item = data.item.clone();
+                } else if data.slot >= 0 && data.slot < 4096 {
+                    let slots = self.inventory_windows.entry(data.window_id as i16).or_default();
+                    let index = data.slot as usize;
+                    if slots.len() <= index { slots.resize(index + 1, None); }
+                    slots[index] = data.item.clone();
+                }
+                Ok(PlayEvent::SetSlot(data))
+            }
+            0x30 => {
+                let data = decode_window_items(payload)?;
+                self.inventory_windows.insert(data.window_id as i16, data.items.clone());
+                Ok(PlayEvent::WindowItems(data))
+            }
             0x09 => {
                 let slot = decode_held_item_change(payload)?;
                 self.selected_hotbar_slot = slot;
@@ -1387,6 +1484,8 @@ mod tests {
             entity_id: 0,
             dimension: None,
             selected_hotbar_slot: 0,
+            inventory_windows: std::collections::HashMap::new(),
+            carried_item: None,
         };
         assert!(matches!(play.read_event(), Err(ProtocolError::MissingJoinGame)));
         server.join().unwrap();
@@ -1421,6 +1520,8 @@ mod tests {
             entity_id: 0,
             dimension: None,
             selected_hotbar_slot: 0,
+            inventory_windows: std::collections::HashMap::new(),
+            carried_item: None,
         };
         let mut world = World::new();
         assert!(matches!(play.read_world_event(&mut world).unwrap(), PlayEvent::JoinGame(_)));
@@ -1522,12 +1623,70 @@ mod tests {
             identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
             stream: PacketStream::new(socket),
             entity_id: 1, dimension: Some(0), selected_hotbar_slot: 0,
+            inventory_windows: std::collections::HashMap::new(), carried_item: None,
         };
         play.send_player_movement(PlayerMove { x: 1.0, y: 65.0, z: 2.0, yaw: 30.0, pitch: -5.0 }, true).unwrap();
         play.send_digging(DiggingStatus::Start, BlockPos::new(4, 64, -2), BlockFace::Up).unwrap();
         play.send_held_item_change(6).unwrap();
         assert_eq!(play.selected_hotbar_slot, 6);
         server.join().unwrap();
+    }
+    fn put_network_item_stack(item_id: i16, count: i8, damage: i16, nbt: Option<&[u8]>, output: &mut Vec<u8>) {
+        output.extend_from_slice(&item_id.to_be_bytes());
+        if item_id >= 0 {
+            output.push(count as u8);
+            output.extend_from_slice(&damage.to_be_bytes());
+            if let Some(nbt) = nbt { output.extend_from_slice(nbt); } else { output.push(0); }
+        }
+    }
+
+    #[test]
+    fn decodes_set_slot_with_empty_and_compound_nbt_items() {
+        let mut payload = vec![0];
+        payload.extend_from_slice(&5_i16.to_be_bytes());
+        put_network_item_stack(-1, 0, 0, None, &mut payload);
+        let empty = decode_set_slot(&payload).unwrap();
+        assert_eq!(empty.window_id, 0);
+        assert_eq!(empty.slot, 5);
+        assert!(empty.item.is_none());
+
+        let compound = [10, 0, 0, 0];
+        let mut payload = vec![0];
+        payload.extend_from_slice(&36_i16.to_be_bytes());
+        put_network_item_stack(276, 1, 7, Some(&compound), &mut payload);
+        let item = decode_set_slot(&payload).unwrap().item.unwrap();
+        assert_eq!(item.item_id, 276);
+        assert_eq!(item.count, 1);
+        assert_eq!(item.damage, 7);
+        assert_eq!(item.tag.unwrap().value, Tag::Compound(std::collections::BTreeMap::new()));
+    }
+
+    #[test]
+    fn decodes_window_items_and_multiple_nbt_slots() {
+        let compound = [10, 0, 0, 0];
+        let mut payload = vec![0];
+        payload.extend_from_slice(&3_i16.to_be_bytes());
+        put_network_item_stack(-1, 0, 0, None, &mut payload);
+        put_network_item_stack(1, 64, 0, None, &mut payload);
+        put_network_item_stack(276, 1, 7, Some(&compound), &mut payload);
+        let decoded = decode_window_items(&payload).unwrap();
+        assert_eq!(decoded.window_id, 0);
+        assert_eq!(decoded.items.len(), 3);
+        assert!(decoded.items[0].is_none());
+        assert_eq!(decoded.items[1].as_ref().unwrap().count, 64);
+        assert!(decoded.items[2].as_ref().unwrap().tag.is_some());
+    }
+
+    #[test]
+    fn rejects_malformed_item_nbt_and_window_lengths() {
+        let mut malformed = vec![0];
+        malformed.extend_from_slice(&1_i16.to_be_bytes());
+        put_network_item_stack(1, 1, 0, Some(&[10, 0, 0]), &mut malformed);
+        assert!(decode_set_slot(&malformed).is_err());
+
+        let mut too_many = vec![0];
+        too_many.extend_from_slice(&(-1_i16).to_be_bytes());
+        assert!(matches!(decode_window_items(&too_many), Err(ProtocolError::InvalidWindowData(_))));
     }
     #[test]
     fn parses_host_ports() {

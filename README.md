@@ -19,6 +19,7 @@ An independent, clean-room Rust implementation project targeting the **Minecraft
 - Play-state packet dispatcher for Join Game, chat, time, spawn position, respawn, player teleport, chunks, block updates, and bulk chunks; Keep Alive is automatically echoed.
 - World-event pump that applies incoming chunk and block updates to the world model.
 - Serverbound movement (position, look, position+look), mining status, held-hotbar slot, and animation packets; PlaySession exposes send methods.
+- Protocol-47 ItemStack decoding with optional NBT, plus Set Slot (`0x2F`) and Window Items (`0x30`) inventory sync; PlaySession tracks open-window slots and carried cursor item.
 - World application for full and partial chunk updates, with packed light-nibble access.
 - Bounded packet cursor with primitive and UTF-8 string readers.
 - Sparse 16×256×16 chunk/world storage with correct negative-coordinate chunk math.

@@ -60,6 +60,16 @@ fn print_play_event(event: PlayEvent, world: &World) {
             change.records.len(), change.chunk.x, change.chunk.z
         ),
         PlayEvent::HeldItemChange(slot) => println!("[HOTBAR] selected slot {slot}"),
+        PlayEvent::SetSlot(data) => {
+            let item = data.item.as_ref()
+                .map(|stack| format!("id={} count={} damage={}", stack.item_id, stack.count, stack.damage))
+                .unwrap_or_else(|| "empty".to_owned());
+            println!("[INVENTORY] window={} slot={} {item}", data.window_id, data.slot);
+        }
+        PlayEvent::WindowItems(data) => {
+            let occupied = data.items.iter().filter(|item| item.is_some()).count();
+            println!("[INVENTORY] window={} slots={} occupied={}", data.window_id, data.items.len(), occupied);
+        }
         PlayEvent::KeepAliveResponded(_) => {}
         PlayEvent::Unknown { packet_id, payload } => println!(
             "[PACKET] unhandled Play packet 0x{packet_id:02X} ({} payload bytes)",

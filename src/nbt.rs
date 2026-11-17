@@ -152,14 +152,26 @@ pub fn parse(data: &[u8]) -> Result<NamedTag, Error> {
 }
 
 pub fn parse_with_limits(data: &[u8], limits: Limits) -> Result<NamedTag, Error> {
-    let mut r = Reader::new(data, limits);
-    let id = r.u8()?;
-    if !(1..=12).contains(&id) { return Err(Error::InvalidRoot(id)); }
-    let name = r.string()?;
-    let value = r.payload(id, 0)?;
-    let trailing = r.data.len() - r.pos;
+    let (tag, consumed) = parse_prefix_with_limits(data, limits)?;
+    let trailing = data.len().saturating_sub(consumed);
     if trailing != 0 { return Err(Error::Trailing(trailing)); }
-    Ok(NamedTag { name, value })
+    Ok(tag)
+}
+
+/// Parse one named root tag from the start of a larger byte slice.
+/// Returns the parsed tag and the number of bytes consumed.
+pub fn parse_prefix(data: &[u8]) -> Result<(NamedTag, usize), Error> {
+    parse_prefix_with_limits(data, Limits::default())
+}
+
+pub fn parse_prefix_with_limits(data: &[u8], limits: Limits) -> Result<(NamedTag, usize), Error> {
+    let mut reader = Reader::new(data, limits);
+    let id = reader.u8()?;
+    if !(1..=12).contains(&id) { return Err(Error::InvalidRoot(id)); }
+    let name = reader.string()?;
+    let value = reader.payload(id, 0)?;
+    let consumed = reader.pos;
+    Ok((NamedTag { name, value }, consumed))
 }
 
 #[cfg(test)]
@@ -169,6 +181,21 @@ mod tests {
     fn put_string(s: &str, out: &mut Vec<u8>) {
         out.extend_from_slice(&(s.len() as u16).to_be_bytes());
         out.extend_from_slice(s.as_bytes());
+    }
+
+
+    #[test]
+    fn parses_one_root_tag_from_a_concatenated_stream() {
+        let first = vec![10, 0, 0, 0];
+        let second = vec![3, 0, 0, 0, 0, 0, 7];
+        let mut stream = first.clone();
+        stream.extend_from_slice(&second);
+        let (root, consumed) = parse_prefix(&stream).unwrap();
+        assert_eq!(root.value, Tag::Compound(BTreeMap::new()));
+        assert_eq!(consumed, first.len());
+        let (next, next_consumed) = parse_prefix(&stream[consumed..]).unwrap();
+        assert_eq!(next.value, Tag::Int(7));
+        assert_eq!(next_consumed, second.len());
     }
 
     #[test]
