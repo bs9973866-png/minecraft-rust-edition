@@ -304,6 +304,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     println!("[BLOCK] ({x}, {y}, {z}) -> state {state}"),
                 PlayPacket::MultiBlockChange { chunk_x, chunk_z, changes } =>
                     println!("[BLOCKS] {} updates in chunk ({chunk_x}, {chunk_z})", changes.len()),
+                PlayPacket::SetSlot { window_id, slot, item } =>
+                    println!("[INVENTORY] window={window_id}, slot={slot}, item={}", item.map_or("empty".into(), |stack| format!("{} x{}", stack.item_id, stack.count))),
+                PlayPacket::WindowItems { window_id, items } =>
+                    println!("[INVENTORY] window={window_id}, {} slots", items.len()),
+                PlayPacket::HeldItemChange { slot } =>
+                    println!("[INVENTORY] server selected hotbar slot {slot}"),
                 PlayPacket::KeepAlive { id } =>
                     println!("[KEEP-ALIVE] replied to id={id}"),
                 PlayPacket::Unknown { id, payload } =>
