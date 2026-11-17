@@ -28,7 +28,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Build portable launcher
         shell: pwsh
-        run: .\\build-launcher.ps1
+        run: .\build-launcher.ps1
       - name: Upload portable folder
         uses: actions/upload-artifact@v4
         with:
