@@ -198,6 +198,104 @@ pub fn read_compressed_frame<R: Read>(reader: &mut R, maximum_uncompressed: usiz
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JoinGameInfo {
+    pub entity_id: i32,
+    pub game_mode: u8,
+    pub hardcore_mode: bool,
+    pub dimension: i8,
+    pub difficulty: u8,
+    pub max_players: u8,
+    pub level_type: String,
+    pub reduced_debug_info: bool,
+}
+impl JoinGameInfo {
+    pub fn has_sky_light(&self) -> bool { self.dimension == 0 }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct KeepAlive { pub id: i32 }
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerPositionLook {
+    pub x: f64, pub y: f64, pub z: f64,
+    pub yaw: f32, pub pitch: f32, pub flags: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerMove {
+    pub x: f64, pub y: f64, pub z: f64,
+    pub yaw: f32, pub pitch: f32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TimeUpdate { pub world_age: i64, pub time_of_day: i64 }
+
+pub fn decode_join_game(payload: &[u8]) -> Result<JoinGameInfo, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let entity_id = cursor.read_i32()?;
+    let raw_game_mode = cursor.read_u8()?;
+    let hardcore_mode = raw_game_mode & 8 != 0;
+    let game_mode = raw_game_mode & !8;
+    let dimension = cursor.read_i8()?;
+    let difficulty = cursor.read_u8()?;
+    let max_players = cursor.read_u8()?;
+    let level_type = cursor.read_string(16)?;
+    let reduced = cursor.read_u8()?;
+    if reduced > 1 { return Err(ProtocolError::InvalidBlockUpdate("invalid reduced-debug flag")); }
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in Join Game")); }
+    Ok(JoinGameInfo { entity_id, game_mode, hardcore_mode, dimension, difficulty, max_players, level_type, reduced_debug_info: reduced != 0 })
+}
+
+pub fn decode_keep_alive(payload: &[u8]) -> Result<KeepAlive, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let id = cursor.read_varint()?;
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in Keep Alive")); }
+    Ok(KeepAlive { id })
+}
+
+pub fn decode_player_position_look(payload: &[u8]) -> Result<PlayerPositionLook, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let update = PlayerPositionLook {
+        x: cursor.read_f64()?, y: cursor.read_f64()?, z: cursor.read_f64()?,
+        yaw: cursor.read_f32()?, pitch: cursor.read_f32()?, flags: cursor.read_u8()?,
+    };
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in Player Position & Look")); }
+    Ok(update)
+}
+
+pub fn decode_time_update(payload: &[u8]) -> Result<TimeUpdate, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let update = TimeUpdate { world_age: cursor.read_i64()?, time_of_day: cursor.read_i64()? };
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in Time Update")); }
+    Ok(update)
+}
+
+pub fn decode_spawn_position(payload: &[u8]) -> Result<BlockPos, ProtocolError> {
+    let mut cursor = PacketCursor::new(payload);
+    let position = decode_packed_position(cursor.read_i64()? as u64);
+    if !cursor.is_empty() { return Err(ProtocolError::InvalidBlockUpdate("trailing bytes in Spawn Position")); }
+    Ok(position)
+}
+
+pub fn encode_keep_alive_response(id: i32) -> Vec<u8> {
+    let mut payload = Vec::new();
+    write_varint(id, &mut payload);
+    encode_packet(0x00, &payload)
+}
+
+/// Serverbound Player Position & Look (packet ID 0x06).
+pub fn encode_player_position_look(update: PlayerMove, on_ground: bool) -> Vec<u8> {
+    let mut payload = Vec::with_capacity(33);
+    payload.extend_from_slice(&update.x.to_be_bytes());
+    payload.extend_from_slice(&update.y.to_be_bytes());
+    payload.extend_from_slice(&update.z.to_be_bytes());
+    payload.extend_from_slice(&update.yaw.to_be_bytes());
+    payload.extend_from_slice(&update.pitch.to_be_bytes());
+    payload.push(u8::from(on_ground));
+    encode_packet(0x06, &payload)
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MapChunkBulkData {
     pub sky_light_sent: bool,
     pub columns: Vec<ChunkColumnData>,
@@ -375,6 +473,41 @@ pub fn decode_chunk_data_packet(payload: &[u8], has_sky_light: bool) -> Result<C
         }
     }
     Ok(ChunkColumnData { position: ChunkPos::new(x, z), ground_up, unload: false, sections, biomes })
+}
+
+/// Stateful packet framing for a single Minecraft TCP connection.
+pub struct PacketStream<S> {
+    inner: S,
+    compression_threshold: Option<usize>,
+    max_frame_size: usize,
+    max_uncompressed_size: usize,
+}
+
+impl<S: Read + Write> PacketStream<S> {
+    pub fn new(inner: S) -> Self {
+        Self { inner, compression_threshold: None, max_frame_size: DEFAULT_MAX_FRAME_SIZE, max_uncompressed_size: DEFAULT_MAX_FRAME_SIZE }
+    }
+    pub fn with_limits(inner: S, max_frame_size: usize, max_uncompressed_size: usize) -> Self {
+        Self { inner, compression_threshold: None, max_frame_size, max_uncompressed_size }
+    }
+    pub fn set_compression_threshold(&mut self, threshold: Option<usize>) { self.compression_threshold = threshold; }
+    pub fn compression_threshold(&self) -> Option<usize> { self.compression_threshold }
+    pub fn read_packet(&mut self) -> Result<Vec<u8>, ProtocolError> {
+        match self.compression_threshold {
+            Some(_) => read_compressed_frame(&mut self.inner, self.max_uncompressed_size),
+            None => read_frame(&mut self.inner, self.max_frame_size),
+        }
+    }
+    pub fn write_packet(&mut self, packet_id: i32, payload: &[u8]) -> Result<(), ProtocolError> {
+        let frame = match self.compression_threshold {
+            Some(threshold) => encode_compressed_packet(packet_id, payload, threshold)?,
+            None => encode_packet(packet_id, payload),
+        };
+        self.inner.write_all(&frame)?;
+        self.inner.flush()?;
+        Ok(())
+    }
+    pub fn into_inner(self) -> S { self.inner }
 }
 
 /// Read one complete Minecraft packet frame from a stream.
@@ -668,6 +801,91 @@ mod tests {
         truncated.extend_from_slice(&0_i32.to_be_bytes());
         truncated.extend_from_slice(&1_u16.to_be_bytes());
         assert!(matches!(decode_map_chunk_bulk(&truncated), Err(ProtocolError::UnexpectedEof)));
+    }
+    #[test]
+    fn decodes_join_game_dimension_hardcore_and_sky_light() {
+        let mut payload = Vec::new();
+        payload.extend_from_slice(&42_i32.to_be_bytes());
+        payload.push(9); payload.push(0); payload.push(2); payload.push(20);
+        write_string("default", &mut payload);
+        payload.push(1);
+        let join = decode_join_game(&payload).unwrap();
+        assert_eq!(join.entity_id, 42);
+        assert_eq!(join.game_mode, 1);
+        assert!(join.hardcore_mode);
+        assert_eq!(join.dimension, 0);
+        assert!(join.has_sky_light());
+        assert_eq!(join.level_type, "default");
+        assert!(join.reduced_debug_info);
+        payload[5] = 1;
+        assert!(!decode_join_game(&payload).unwrap().has_sky_light());
+    }
+
+    #[test]
+    fn keep_alive_round_trip_uses_varint_packet() {
+        let frame = encode_keep_alive_response(300);
+        let body = read_frame(&mut Cursor::new(frame), 64).unwrap();
+        let mut cursor = PacketCursor::new(&body);
+        assert_eq!(cursor.read_varint().unwrap(), 0);
+        assert_eq!(decode_keep_alive(&body[1..]).unwrap(), KeepAlive { id: 300 });
+    }
+
+    #[test]
+    fn player_position_and_look_packet_encoding() {
+        let update = PlayerMove { x: 12.5, y: 64.0, z: -3.25, yaw: 90.0, pitch: -15.0 };
+        let frame = encode_player_position_look(update, true);
+        let body = read_frame(&mut Cursor::new(frame), 64).unwrap();
+        let mut cursor = PacketCursor::new(&body);
+        assert_eq!(cursor.read_varint().unwrap(), 0x06);
+        assert_eq!(cursor.read_f64().unwrap(), 12.5);
+        assert_eq!(cursor.read_f64().unwrap(), 64.0);
+        assert_eq!(cursor.read_f64().unwrap(), -3.25);
+        assert_eq!(cursor.read_f32().unwrap(), 90.0);
+        assert_eq!(cursor.read_f32().unwrap(), -15.0);
+        assert_eq!(cursor.read_u8().unwrap(), 1);
+        assert!(cursor.is_empty());
+    }
+
+    #[test]
+    fn decodes_time_and_spawn_position() {
+        let mut time = Vec::new();
+        time.extend_from_slice(&123_i64.to_be_bytes());
+        time.extend_from_slice(&(-6000_i64).to_be_bytes());
+        assert_eq!(decode_time_update(&time).unwrap(), TimeUpdate { world_age: 123, time_of_day: -6000 });
+        let mut spawn = Vec::new();
+        spawn.extend_from_slice(&encode_position(-22, 70, 41).to_be_bytes());
+        assert_eq!(decode_spawn_position(&spawn).unwrap(), BlockPos::new(-22, 70, 41));
+    }
+
+    #[test]
+    fn packet_stream_reads_compressed_and_uncompressed_frames() {
+        let frame = encode_compressed_packet(0x2A, &[7, 8, 9], 1).unwrap();
+        let mut stream = PacketStream::new(Cursor::new(frame));
+        stream.set_compression_threshold(Some(1));
+        let packet = stream.read_packet().unwrap();
+        let mut cursor = PacketCursor::new(&packet);
+        assert_eq!(cursor.read_varint().unwrap(), 0x2A);
+        assert_eq!(cursor.read_exact_bytes(3).unwrap(), [7, 8, 9]);
+        let frame = encode_packet(0x2B, &[1, 2]);
+        let mut stream = PacketStream::new(Cursor::new(frame));
+        assert!(stream.compression_threshold().is_none());
+        let packet = stream.read_packet().unwrap();
+        let mut cursor = PacketCursor::new(&packet);
+        assert_eq!(cursor.read_varint().unwrap(), 0x2B);
+    }
+
+    #[test]
+    fn packet_stream_writes_with_negotiated_compression() {
+        let mut stream = PacketStream::new(Cursor::new(Vec::new()));
+        stream.set_compression_threshold(Some(1));
+        stream.write_packet(0x31, &[b'X'; 64]).unwrap();
+        let bytes = stream.into_inner().into_inner();
+        let mut reader = PacketStream::new(Cursor::new(bytes));
+        reader.set_compression_threshold(Some(1));
+        let body = reader.read_packet().unwrap();
+        let mut cursor = PacketCursor::new(&body);
+        assert_eq!(cursor.read_varint().unwrap(), 0x31);
+        assert_eq!(cursor.read_exact_bytes(64).unwrap(), vec![b'X'; 64]);
     }
     #[test]
     fn parses_host_ports() {
