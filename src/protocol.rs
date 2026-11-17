@@ -2312,7 +2312,8 @@ mod tests {
         assert_eq!(entity.velocity, [0.0; 3]);
 
         let mut with_velocity = without_velocity;
-        with_velocity[with_velocity.len() - 4..].copy_from_slice(&1_i32.to_be_bytes());
+        let data_offset = with_velocity.len() - 4;
+        with_velocity[data_offset..].copy_from_slice(&1_i32.to_be_bytes());
         with_velocity.extend_from_slice(&10_i16.to_be_bytes());
         with_velocity.extend_from_slice(&(-20_i16).to_be_bytes());
         with_velocity.extend_from_slice(&30_i16.to_be_bytes());

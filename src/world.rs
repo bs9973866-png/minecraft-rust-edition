@@ -288,6 +288,7 @@ fn first_boundary(origin: f64, voxel: i32, direction: f64, step: i32) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entity::{EntityKind, EntityMetadataValue};
     #[test]
     fn tracks_spawned_entities_and_applies_server_updates() {
         let mut world = World::new();
