@@ -1,8 +1,9 @@
 mod status;
 mod login;
 
-use game::ChunkPos;
+use game::{decode_chunk_column, ChunkPos, ServerEvent};
 use protocol::{encode_varint, PlayPacket};
+use std::{sync::mpsc, thread};
 use renderer::RenderConfig;
 
 fn print_usage() {
@@ -11,7 +12,8 @@ fn print_usage() {
     println!("  rust-edition --window        Open the local procedural-world window");
     println!("  rust-edition --status HOST[:PORT]  Query a Minecraft server status");
     println!("  rust-edition --login HOST[:PORT] --username NAME  Test offline-mode login");
-    println!("  rust-edition --play HOST[:PORT] --username NAME   Connect and stay in 1.8.9 Play state");
+    println!("  rust-edition --play HOST[:PORT] --username NAME   Console protocol-47 Play session");
+    println!("  rust-edition --join HOST[:PORT] --username NAME   Open a window and display server chunks");
 }
 
 fn parse_target(value: &str) -> Result<(&str, u16), Box<dyn std::error::Error>> {
@@ -43,6 +45,104 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         println!("Offline profile: {username}");
         renderer::run_window_with_username(username).map_err(|error| format!("renderer: {error}"))?;
+        return Ok(());
+    }
+
+    if args.get(1).map(String::as_str) == Some("--join") {
+        let target = args.get(2).ok_or("missing server address; example: localhost:25565")?;
+        let username = username_arg(&args)?;
+        let (host, port) = parse_target(target)?;
+        let host = host.to_owned();
+        let username = username.to_owned();
+        let (event_tx, event_rx) = mpsc::channel::<ServerEvent>();
+
+        thread::Builder::new()
+            .name("rust-edition-network".into())
+            .spawn(move || {
+                let mut session = match login::connect_offline(&host, port, &username) {
+                    Ok(session) => session,
+                    Err(error) => {
+                        eprintln!("[NETWORK] connection failed: {error}");
+                        return;
+                    }
+                };
+                eprintln!(
+                    "[NETWORK] connected to {host}:{port} as {}",
+                    session.player.username
+                );
+                if let Err(error) = session.send_client_settings() {
+                    eprintln!("[NETWORK] could not send client settings: {error}");
+                    return;
+                }
+
+                let mut has_skylight = true;
+                loop {
+                    let packet = match session.read_play_packet() {
+                        Ok(packet) => packet,
+                        Err(error) => {
+                            eprintln!("[NETWORK] disconnected: {error}");
+                            break;
+                        }
+                    };
+
+                    match &packet {
+                        PlayPacket::JoinGame(info) => {
+                            has_skylight = info.dimension == 0;
+                            eprintln!(
+                                "[WORLD] joined: dimension={}, mode={}, level={}",
+                                info.dimension, info.game_mode, info.level_type
+                            );
+                        }
+                        PlayPacket::ChunkData {
+                            x, z, ground_up, primary_bitmap, data,
+                        } => {
+                            match decode_chunk_column(
+                                *x,
+                                *z,
+                                *ground_up,
+                                *primary_bitmap,
+                                data,
+                                has_skylight,
+                            ) {
+                                Ok(column) => {
+                                    if event_tx.send(ServerEvent::ChunkColumn(column)).is_err() {
+                                        break;
+                                    }
+                                }
+                                Err(error) => {
+                                    eprintln!("[CHUNK] rejected ({x}, {z}): {error}");
+                                }
+                            }
+                        }
+                        PlayPacket::ChatMessage { json, position } => {
+                            eprintln!("[CHAT:{position}] {json}");
+                        }
+                        PlayPacket::Unknown { id, payload } => {
+                            eprintln!(
+                                "[PACKET] unhandled clientbound Play packet 0x{id:02x} ({} bytes)",
+                                payload.len()
+                            );
+                        }
+                        _ => {}
+                    }
+
+                    if let Err(error) = session.respond_to_server_packet(&packet) {
+                        eprintln!("[NETWORK] could not answer server packet: {error}");
+                        break;
+                    }
+                    if matches!(packet, PlayPacket::PlayerPositionLook { .. }) {
+                        let position = session.position().map(|v| v as f32);
+                        if event_tx.send(ServerEvent::Teleport(position)).is_err() {
+                            break;
+                        }
+                    }
+                }
+            })?;
+
+        println!("Opening server world window for {username} at {host}:{port}.");
+        println!("Incoming server chunks are rendered; movement is still local and not yet synchronized.");
+        renderer::run_window_with_server_events(&username, event_rx)
+            .map_err(|error| format!("renderer: {error}"))?;
         return Ok(());
     }
 
