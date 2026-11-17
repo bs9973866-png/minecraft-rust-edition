@@ -81,8 +81,9 @@ impl Camera {
     fn teleport(&mut self, feet_position: [f32; 3], yaw: f32, pitch: f32) {
         self.physics.teleport(feet_position);
         self.position = Vec3::from_array(feet_position) + Vec3::Y * 1.62;
-        self.yaw = yaw;
-        self.pitch = pitch.clamp(-1.54, 1.54);
+        // The wire protocol uses degrees; the camera stores radians.
+        self.yaw = yaw.to_radians();
+        self.pitch = pitch.to_radians().clamp(-1.54, 1.54);
     }
 
     fn update_movement(&mut self, world: &World, dt: f32, keys: &HashSet<KeyCode>, jump_pressed: bool) {
@@ -551,7 +552,11 @@ fn run_window_internal(
     let _ = window.set_cursor_grab(CursorGrabMode::Locked)
         .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
     window.set_cursor_visible(false);
-    eprintln!("Rust Edition: WASD move, mouse look, Space jump, left click break, right click place, Escape quit.");
+    if action_tx.is_some() {
+        eprintln!("Rust Edition server mode: WASD move, mouse look, hold left click to mine, Escape quit. Block placement is not ready yet.");
+    } else {
+        eprintln!("Rust Edition: WASD move, mouse look, Space jump, left click break, right click place, Escape quit.");
+    }
 
     let mut pressed_keys = HashSet::new();
     let mut jump_requested = false;
@@ -723,8 +728,8 @@ fn run_window_internal(
                     let position = gpu.camera.physics.position();
                     let movement = PlayerMovement {
                         position: position.map(f64::from),
-                        yaw: gpu.camera.yaw,
-                        pitch: gpu.camera.pitch,
+                        yaw: gpu.camera.yaw.to_degrees(),
+                        pitch: gpu.camera.pitch.to_degrees(),
                         on_ground: gpu.camera.physics.on_ground(),
                     };
                     if sender.send(movement).is_err() {
