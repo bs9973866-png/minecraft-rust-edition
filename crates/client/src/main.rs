@@ -200,6 +200,13 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                                 info.dimension, info.game_mode, info.level_type
                             );
                         }
+                        PlayPacket::Respawn { dimension, difficulty, game_mode, level_type } => {
+                            has_skylight = *dimension == 0;
+                            eprintln!("[WORLD] respawn: dimension={dimension}, difficulty={difficulty}, mode={game_mode}, level={level_type}");
+                            if event_tx.send(ServerEvent::Respawn { dimension: *dimension }).is_err() {
+                                break;
+                            }
+                        }
                         PlayPacket::ChunkData {
                             x, z, ground_up, primary_bitmap, data,
                         } => {
@@ -351,6 +358,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
                     "[WORLD] joined: entity={}, mode={}, dimension={}, difficulty={}, level={}",
                     info.entity_id, info.game_mode, info.dimension, info.difficulty, info.level_type
                 ),
+                PlayPacket::Respawn { dimension, difficulty, game_mode, level_type } =>
+                    println!("[WORLD] respawn: dimension={dimension}, difficulty={difficulty}, mode={game_mode}, level={level_type}"),
                 PlayPacket::ChatMessage { json, position } =>
                     println!("[CHAT:{position}] {}", plain_chat_text(&json)),
                 PlayPacket::TimeUpdate { world_age, time_of_day } =>
