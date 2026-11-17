@@ -12,3 +12,4 @@ path = "src/main.rs"
 protocol = { package = "rust-edition-protocol", path = "../protocol" }
 game = { package = "rust-edition-game", path = "../game" }
 renderer = { package = "rust-edition-renderer", path = "../renderer" }
+serde_json = "1"
