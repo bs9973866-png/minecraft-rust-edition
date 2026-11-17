@@ -39,6 +39,7 @@ pub struct ChunkSectionData {
 pub struct ChunkColumnData {
     pub position: ChunkPos,
     pub ground_up: bool,
+    pub unload: bool,
     pub sections: [Option<ChunkSectionData>; 16],
     pub biomes: Option<[u8; 256]>,
 }
@@ -133,6 +134,7 @@ impl World {
     pub fn remove_chunk(&mut self, position: ChunkPos) -> Option<Chunk> { self.chunks.remove(&position) }
     /// Apply a decoded server column. Full updates replace the column; partial updates keep unmasked sections.
     pub fn apply_chunk_data(&mut self, data: ChunkColumnData) -> Result<(), WorldError> {
+        if data.unload { self.chunks.remove(&data.position); return Ok(()); }
         for (index, section) in data.sections.iter().enumerate() {
             if let Some(section) = section {
                 if section.blocks.len() != 4096 { return Err(WorldError::InvalidBlockCount { section: index, actual: section.blocks.len() }); }
@@ -234,7 +236,7 @@ mod tests {
         let mut biomes = [0_u8; 256];
         biomes[0] = 4;
         let mut world = World::new();
-        world.apply_chunk_data(ChunkColumnData { position: ChunkPos::new(-1, 2), ground_up: true, sections, biomes: Some(biomes) }).unwrap();
+        world.apply_chunk_data(ChunkColumnData { position: ChunkPos::new(-1, 2), ground_up: true, unload: false, sections, biomes: Some(biomes) }).unwrap();
         assert_eq!(world.get_block(BlockPos::new(-13, 1, 2)), BlockState(0x1234));
         let chunk = world.get_chunk(ChunkPos::new(-1, 2)).unwrap();
         assert_eq!(chunk.get_block_light(0, 0, 0), 5);
@@ -252,9 +254,17 @@ mod tests {
         let mut blocks = vec![0_u16; 4096];
         blocks[0] = 2;
         sections[0] = Some(ChunkSectionData { blocks, block_light: vec![0; 2048], sky_light: None });
-        world.apply_chunk_data(ChunkColumnData { position: ChunkPos::new(0, 0), ground_up: false, sections, biomes: None }).unwrap();
+        world.apply_chunk_data(ChunkColumnData { position: ChunkPos::new(0, 0), ground_up: false, unload: false, sections, biomes: None }).unwrap();
         assert_eq!(world.get_block(BlockPos::new(0, 0, 0)), BlockState(2));
         assert_eq!(world.get_block(BlockPos::new(0, 20, 0)), BlockState(1));
+    }
+    #[test]
+    fn unload_packet_removes_chunk_column() {
+        let mut world = World::new();
+        world.set_block(BlockPos::new(64, 32, -32), BlockState(7));
+        let data = ChunkColumnData { position: ChunkPos::new(4, -2), ground_up: true, unload: true, sections: std::array::from_fn(|_| None), biomes: None };
+        world.apply_chunk_data(data).unwrap();
+        assert_eq!(world.chunk_count(), 0);
     }
     #[test]
     fn negative_coordinates_use_floor_chunk_math() {

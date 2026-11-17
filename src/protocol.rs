@@ -198,6 +198,8 @@ pub fn read_compressed_frame<R: Read>(reader: &mut R, maximum_uncompressed: usiz
 
 /// Decode a protocol-47 Chunk Data packet payload (packet ID 0x21 excluded).
 /// `has_sky_light` is true only for dimensions that have skylight.
+/// Decode a protocol-47 Chunk Data packet payload (packet ID 0x21 excluded).
+/// `has_sky_light` must match the current dimension.
 pub fn decode_chunk_data_packet(payload: &[u8], has_sky_light: bool) -> Result<ChunkColumnData, ProtocolError> {
     let mut packet = PacketCursor::new(payload);
     let x = packet.read_i32()?;
@@ -211,6 +213,9 @@ pub fn decode_chunk_data_packet(payload: &[u8], has_sky_light: bool) -> Result<C
     let data_length = data_length as usize;
     let data = packet.read_bytes(data_length)?;
     if !packet.is_empty() { return Err(ProtocolError::InvalidChunkData("trailing packet bytes")); }
+    if ground_up && primary_bitmap == 0 && data_length == 0 {
+        return Ok(ChunkColumnData { position: ChunkPos::new(x, z), ground_up, unload: true, sections: std::array::from_fn(|_| None), biomes: None });
+    }
     let section_count = primary_bitmap.count_ones() as usize;
     let bytes_per_section = 8192 + 2048 + if has_sky_light { 2048 } else { 0 };
     let expected = section_count.checked_mul(bytes_per_section)
@@ -218,15 +223,24 @@ pub fn decode_chunk_data_packet(payload: &[u8], has_sky_light: bool) -> Result<C
         .ok_or(ProtocolError::InvalidChunkData("chunk data length overflow"))?;
     if data_length != expected { return Err(ProtocolError::InvalidChunkData("chunk data length does not match section mask")); }
     let mut cursor = PacketCursor::new(data);
-    let mut sections: [Option<ChunkSectionData>; 16] = std::array::from_fn(|_| None);
+    let mut block_arrays: [Option<Vec<u16>>; 16] = std::array::from_fn(|_| None);
+    let mut block_lights: [Option<Vec<u8>>; 16] = std::array::from_fn(|_| None);
+    let mut sky_lights: [Option<Vec<u8>>; 16] = std::array::from_fn(|_| None);
+    // Protocol 47 groups arrays by type: all blocks, then all block light, then all skylight.
     for section_y in 0..16 {
         if primary_bitmap & (1 << section_y) == 0 { continue; }
-        let raw_blocks = cursor.read_bytes(8192)?;
-        let blocks = raw_blocks.chunks_exact(2)
-            .map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect();
-        let block_light = cursor.read_exact_bytes(2048)?;
-        let sky_light = if has_sky_light { Some(cursor.read_exact_bytes(2048)?) } else { None };
-        sections[section_y] = Some(ChunkSectionData { blocks, block_light, sky_light });
+        let raw = cursor.read_bytes(8192)?;
+        block_arrays[section_y] = Some(raw.chunks_exact(2).map(|pair| u16::from_le_bytes([pair[0], pair[1]])).collect());
+    }
+    for section_y in 0..16 {
+        if primary_bitmap & (1 << section_y) == 0 { continue; }
+        block_lights[section_y] = Some(cursor.read_exact_bytes(2048)?);
+    }
+    if has_sky_light {
+        for section_y in 0..16 {
+            if primary_bitmap & (1 << section_y) == 0 { continue; }
+            sky_lights[section_y] = Some(cursor.read_exact_bytes(2048)?);
+        }
     }
     let biomes = if ground_up {
         let mut values = [0_u8; 256];
@@ -234,7 +248,17 @@ pub fn decode_chunk_data_packet(payload: &[u8], has_sky_light: bool) -> Result<C
         Some(values)
     } else { None };
     if !cursor.is_empty() { return Err(ProtocolError::InvalidChunkData("unconsumed chunk data")); }
-    Ok(ChunkColumnData { position: ChunkPos::new(x, z), ground_up, sections, biomes })
+    let mut sections: [Option<ChunkSectionData>; 16] = std::array::from_fn(|_| None);
+    for section_y in 0..16 {
+        if let Some(blocks) = block_arrays[section_y].take() {
+            sections[section_y] = Some(ChunkSectionData {
+                blocks,
+                block_light: block_lights[section_y].take().unwrap_or_default(),
+                sky_light: sky_lights[section_y].take(),
+            });
+        }
+    }
+    Ok(ChunkColumnData { position: ChunkPos::new(x, z), ground_up, unload: false, sections, biomes })
 }
 
 /// Read one complete Minecraft packet frame from a stream.
@@ -376,8 +400,14 @@ mod tests {
                 blocks[index * 2..index * 2 + 2].copy_from_slice(&0x1234_u16.to_le_bytes());
             }
             data.extend_from_slice(&blocks);
-            data.extend(std::iter::repeat(0xAA).take(2048));
-            if sky { data.extend(std::iter::repeat(0xBB).take(2048)); }
+        }
+        for section_y in 0..16 {
+            if bitmap & (1 << section_y) != 0 { data.extend(std::iter::repeat(0xAA).take(2048)); }
+        }
+        if sky {
+            for section_y in 0..16 {
+                if bitmap & (1 << section_y) != 0 { data.extend(std::iter::repeat(0xBB).take(2048)); }
+            }
         }
         if ground_up { data.extend(std::iter::repeat(0xCC).take(256)); }
         let mut out = Vec::new();
@@ -389,15 +419,15 @@ mod tests {
         out.extend_from_slice(&data);
         out
     }
-
     #[test]
     fn decodes_chunk_sections_lights_and_biomes() {
-        let parsed = decode_chunk_data_packet(&make_chunk_payload(true, 1 << 2, true), true).unwrap();
+        let parsed = decode_chunk_data_packet(&make_chunk_payload(true, (1 << 2) | (1 << 4), true), true).unwrap();
         assert_eq!(parsed.position, ChunkPos::new(-3, 7));
         let section = parsed.sections[2].as_ref().unwrap();
         assert_eq!(section.blocks[(1 << 8) | (2 << 4) | 3], 0x1234);
         assert_eq!(section.block_light[0], 0xAA);
         assert_eq!(section.sky_light.as_ref().unwrap()[0], 0xBB);
+        assert_eq!(parsed.sections[4].as_ref().unwrap().block_light[0], 0xAA);
         assert_eq!(parsed.biomes.unwrap()[255], 0xCC);
     }
 
@@ -416,6 +446,18 @@ mod tests {
         let mut with_trailing = valid;
         with_trailing.push(0);
         assert!(matches!(decode_chunk_data_packet(&with_trailing, true), Err(ProtocolError::InvalidChunkData(_))));
+    }
+    #[test]
+    fn recognizes_empty_ground_up_packet_as_chunk_unload() {
+        let mut packet = Vec::new();
+        packet.extend_from_slice(&4_i32.to_be_bytes());
+        packet.extend_from_slice(&(-2_i32).to_be_bytes());
+        packet.push(1);
+        packet.extend_from_slice(&0_u16.to_be_bytes());
+        write_varint(0, &mut packet);
+        let parsed = decode_chunk_data_packet(&packet, true).unwrap();
+        assert!(parsed.unload);
+        assert_eq!(parsed.position, ChunkPos::new(4, -2));
     }
     #[test]
     fn parses_host_ports() {
