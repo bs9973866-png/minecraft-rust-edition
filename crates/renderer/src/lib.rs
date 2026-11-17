@@ -2,7 +2,7 @@
 //! Draws a generated voxel test world with a movable first-person-style camera.
 
 use std::{collections::HashSet, sync::Arc, time::Instant};
-use game::World;
+use game::{PlayerPhysics, World};
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
@@ -47,15 +47,17 @@ struct Camera {
     yaw: f32,
     pitch: f32,
     aspect: f32,
+    physics: PlayerPhysics,
 }
 
 impl Camera {
     fn new(width: u32, height: u32) -> Self {
         Self {
-            position: Vec3::new(11.0, 10.0, 15.0),
+            position: Vec3::new(0.5, 3.62, 0.5),
             yaw: -2.20,
             pitch: -0.38,
             aspect: width.max(1) as f32 / height.max(1) as f32,
+            physics: PlayerPhysics::new([0.5, 2.0, 0.5]),
         }
     }
 
@@ -76,7 +78,7 @@ impl Camera {
         self.pitch = (self.pitch - delta_y as f32 * sensitivity).clamp(-1.54, 1.54);
     }
 
-    fn update_movement(&mut self, dt: f32, keys: &HashSet<KeyCode>) {
+    fn update_movement(&mut self, world: &World, dt: f32, keys: &HashSet<KeyCode>, jump_pressed: bool) {
         let forward = Vec3::new(self.yaw.cos(), 0.0, self.yaw.sin()).normalize();
         let right = Vec3::new(-forward.z, 0.0, forward.x);
         let mut movement = Vec3::ZERO;
@@ -84,13 +86,9 @@ impl Camera {
         if keys.contains(&KeyCode::KeyS) { movement -= forward; }
         if keys.contains(&KeyCode::KeyD) { movement += right; }
         if keys.contains(&KeyCode::KeyA) { movement -= right; }
-        if movement.length_squared() > 0.0 {
-            self.position += movement.normalize() * (5.0 * dt);
-        }
-        if keys.contains(&KeyCode::Space) { self.position.y += 5.0 * dt; }
-        if keys.contains(&KeyCode::ShiftLeft) || keys.contains(&KeyCode::ShiftRight) {
-            self.position.y -= 5.0 * dt;
-        }
+        let movement = if movement.length_squared() > 0.0 { movement.normalize() } else { Vec3::ZERO };
+        self.physics.tick(world, [movement.x, movement.z], jump_pressed, dt);
+        self.position = Vec3::from_array(self.physics.position()) + Vec3::Y * 1.62;
     }
 }
 
@@ -342,9 +340,10 @@ pub fn run_window() -> Result<(), String> {
     let _ = window.set_cursor_grab(CursorGrabMode::Locked)
         .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
     window.set_cursor_visible(false);
-    eprintln!("Rust Edition: WASD move, mouse look, Space/Shift fly, left click break, right click place, Escape quit.");
+    eprintln!("Rust Edition: WASD move, mouse look, Space jump, left click break, right click place, Escape quit.");
 
     let mut pressed_keys = HashSet::new();
+    let mut jump_requested = false;
     let mut last_frame = Instant::now();
     event_loop.set_control_flow(ControlFlow::Poll);
     window.request_redraw();
@@ -359,6 +358,7 @@ pub fn run_window() -> Result<(), String> {
             WindowEvent::ScaleFactorChanged { .. } => gpu.resize(window.inner_size()),
             WindowEvent::Focused(false) => {
                 pressed_keys.clear();
+                jump_requested = false;
                 let _ = window.set_cursor_grab(CursorGrabMode::None);
                 window.set_cursor_visible(true);
             }
@@ -379,6 +379,7 @@ pub fn run_window() -> Result<(), String> {
                     if key == KeyCode::Escape && event.state == ElementState::Pressed {
                         target.exit();
                     } else if event.state == ElementState::Pressed {
+                        if key == KeyCode::Space && !event.repeat { jump_requested = true; }
                         pressed_keys.insert(key);
                     } else {
                         pressed_keys.remove(&key);
@@ -397,7 +398,8 @@ pub fn run_window() -> Result<(), String> {
             let now = Instant::now();
             let dt = (now - last_frame).as_secs_f32().min(0.05);
             last_frame = now;
-            gpu.camera.update_movement(dt, &pressed_keys);
+            gpu.camera.update_movement(&gpu.world, dt, &pressed_keys, jump_requested);
+            jump_requested = false;
             gpu.update_camera();
             window.request_redraw();
         }
