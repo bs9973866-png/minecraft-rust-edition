@@ -2,11 +2,11 @@
 //! Draws a generated voxel test world with a movable first-person-style camera.
 
 use std::{collections::HashSet, sync::Arc, time::Instant};
-use game::{PlayerPhysics, World};
+use game::{Hotbar, PlayerPhysics, World};
 use glam::{Mat4, Vec3};
 use winit::{
     dpi::PhysicalSize,
-    event::{DeviceEvent, ElementState, Event, MouseButton, WindowEvent},
+    event::{DeviceEvent, ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent},
     event_loop::{ControlFlow, EventLoop},
     keyboard::{KeyCode, PhysicalKey},
     window::{CursorGrabMode, WindowBuilder},
@@ -120,6 +120,61 @@ fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
 }
 "#;
 
+const OVERLAY_SHADER: &str = r#"
+struct VertexInput {
+    @location(0) position: vec3<f32>,
+    @location(1) color: vec3<f32>,
+};
+struct VertexOutput {
+    @builtin(position) clip_position: vec4<f32>,
+    @location(0) color: vec3<f32>,
+};
+@vertex
+fn vs_main(input: VertexInput) -> VertexOutput {
+    var output: VertexOutput;
+    output.clip_position = vec4<f32>(input.position, 1.0);
+    output.color = input.color;
+    return output;
+}
+@fragment
+fn fs_main(input: VertexOutput) -> @location(0) vec4<f32> {
+    return vec4<f32>(input.color, 1.0);
+}
+"#;
+
+fn push_ui_rect(out: &mut Vec<Vertex>, left: f32, top: f32, right: f32, bottom: f32, color: [f32; 3]) {
+    let points = [[left, top, 0.0], [left, bottom, 0.0], [right, bottom, 0.0], [right, top, 0.0]];
+    push_quad(out, points, color);
+}
+
+fn build_overlay_vertices(selected: usize) -> Vec<Vertex> {
+    let mut out = Vec::with_capacity(120);
+    // Simple centered crosshair.
+    push_ui_rect(&mut out, -0.012, -0.0018, 0.012, 0.0018, [0.95, 0.95, 0.95]);
+    push_ui_rect(&mut out, -0.0018, -0.018, 0.0018, 0.018, [0.95, 0.95, 0.95]);
+    // Nine-slot hotbar, centered near the bottom edge.
+    let slot = 0.075;
+    let gap = 0.006;
+    let total = slot * 9.0 + gap * 8.0;
+    let start = -total * 0.5;
+    let top = 0.82;
+    let bottom = 0.94;
+    push_ui_rect(&mut out, start - 0.012, top - 0.012, -start + 0.012, bottom + 0.012, [0.055, 0.045, 0.09]);
+    for index in 0..9 {
+        let left = start + index as f32 * (slot + gap);
+        let right = left + slot;
+        push_ui_rect(&mut out, left, top, right, bottom, [0.18, 0.16, 0.24]);
+        push_ui_rect(&mut out, left + 0.004, top + 0.004, right - 0.004, bottom - 0.004,
+            if index == selected { [0.20, 0.78, 0.92] } else { [0.34, 0.30, 0.42] });
+        push_ui_rect(&mut out, left + 0.009, top + 0.009, right - 0.009, bottom - 0.009,
+            if index == selected { [0.12, 0.10, 0.17] } else { [0.10, 0.085, 0.14] });
+        // Temporary block icon; real item sprites/texture atlas come later.
+        push_ui_rect(&mut out, left + 0.022, top + 0.030, right - 0.022, bottom - 0.030,
+            [0.38, 0.62, 0.30]);
+    }
+    out
+}
+
 struct GpuState {
     surface: wgpu::Surface<'static>,
     device: wgpu::Device,
@@ -132,6 +187,10 @@ struct GpuState {
     camera: Camera,
     camera_buffer: wgpu::Buffer,
     camera_bind_group: wgpu::BindGroup,
+    overlay_pipeline: wgpu::RenderPipeline,
+    overlay_buffer: wgpu::Buffer,
+    overlay_vertex_count: u32,
+    hotbar: Hotbar,
     world: World,
 }
 
@@ -250,6 +309,32 @@ impl GpuState {
             multisample: wgpu::MultisampleState::default(), multiview: None,
         });
 
+        let overlay_shader = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+            label: Some("hotbar and crosshair overlay shader"),
+            source: wgpu::ShaderSource::Wgsl(OVERLAY_SHADER.into()),
+        });
+        let overlay_layout = device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
+            label: Some("overlay pipeline layout"), bind_group_layouts: &[], push_constant_ranges: &[],
+        });
+        let overlay_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
+            label: Some("2D overlay pipeline"), layout: Some(&overlay_layout),
+            vertex: wgpu::VertexState { module: &overlay_shader, entry_point: "vs_main", buffers: &[Vertex::layout()] },
+            fragment: Some(wgpu::FragmentState {
+                module: &overlay_shader, entry_point: "fs_main",
+                targets: &[Some(wgpu::ColorTargetState { format, blend: Some(wgpu::BlendState::ALPHA_BLENDING), write_mask: wgpu::ColorWrites::ALL })],
+            }),
+            primitive: wgpu::PrimitiveState::default(),
+            depth_stencil: None,
+            multisample: wgpu::MultisampleState::default(), multiview: None,
+        });
+
+        let hotbar = Hotbar::default();
+        let overlay_vertices = build_overlay_vertices(hotbar.selected_index());
+        let overlay_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("hotbar overlay vertex buffer"),
+            contents: bytemuck::cast_slice(&overlay_vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
         let world = World::demo();
         let vertices = build_world_vertices(&world);
         let vertex_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
@@ -258,7 +343,19 @@ impl GpuState {
         });
         let depth_view = create_depth_view(&device, config.width, config.height);
         Ok(Self { surface, device, queue, config, pipeline, vertex_buffer,
-            vertex_count: vertices.len() as u32, depth_view, camera, camera_buffer, camera_bind_group, world })
+            vertex_count: vertices.len() as u32, depth_view, camera, camera_buffer, camera_bind_group,
+            overlay_pipeline, overlay_buffer, overlay_vertex_count: overlay_vertices.len() as u32,
+            hotbar, world })
+    }
+
+    fn refresh_overlay(&mut self) {
+        let vertices = build_overlay_vertices(self.hotbar.selected_index());
+        self.overlay_buffer = self.device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+            label: Some("updated hotbar overlay vertex buffer"),
+            contents: bytemuck::cast_slice(&vertices),
+            usage: wgpu::BufferUsages::VERTEX,
+        });
+        self.overlay_vertex_count = vertices.len() as u32;
     }
 
     fn rebuild_world_mesh(&mut self) {
@@ -321,6 +418,20 @@ impl GpuState {
             pass.set_vertex_buffer(0, self.vertex_buffer.slice(..));
             pass.draw(0..self.vertex_count, 0..1);
         }
+        {
+            let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                label: Some("HUD overlay pass"),
+                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                    view: &view, resolve_target: None,
+                    ops: wgpu::Operations { load: wgpu::LoadOp::Load, store: wgpu::StoreOp::Store },
+                })],
+                depth_stencil_attachment: None,
+                timestamp_writes: None, occlusion_query_set: None,
+            });
+            pass.set_pipeline(&self.overlay_pipeline);
+            pass.set_vertex_buffer(0, self.overlay_buffer.slice(..));
+            pass.draw(0..self.overlay_vertex_count, 0..1);
+        }
         self.queue.submit(Some(encoder.finish()));
         frame.present();
         Ok(())
@@ -367,6 +478,16 @@ pub fn run_window() -> Result<(), String> {
                     .or_else(|_| window.set_cursor_grab(CursorGrabMode::Confined));
                 window.set_cursor_visible(false);
             }
+            WindowEvent::MouseWheel { delta, .. } => {
+                let amount = match delta {
+                    MouseScrollDelta::LineDelta(_, y) => y.round() as i32,
+                    MouseScrollDelta::PixelDelta(pos) => (pos.y / 40.0).round() as i32,
+                };
+                if amount != 0 {
+                    gpu.hotbar.cycle(-amount);
+                    gpu.refresh_overlay();
+                }
+            }
             WindowEvent::MouseInput { state: ElementState::Pressed, button, .. } => {
                 match button {
                     MouseButton::Left => gpu.interact(false),
@@ -379,7 +500,19 @@ pub fn run_window() -> Result<(), String> {
                     if key == KeyCode::Escape && event.state == ElementState::Pressed {
                         target.exit();
                     } else if event.state == ElementState::Pressed {
-                        if key == KeyCode::Space && !event.repeat { jump_requested = true; }
+                        if !event.repeat {
+                            if let Some(index) = match key {
+                                KeyCode::Digit1 => Some(0), KeyCode::Digit2 => Some(1),
+                                KeyCode::Digit3 => Some(2), KeyCode::Digit4 => Some(3),
+                                KeyCode::Digit5 => Some(4), KeyCode::Digit6 => Some(5),
+                                KeyCode::Digit7 => Some(6), KeyCode::Digit8 => Some(7),
+                                KeyCode::Digit9 => Some(8), _ => None,
+                            } {
+                                gpu.hotbar.select(index);
+                                gpu.refresh_overlay();
+                            }
+                            if key == KeyCode::Space { jump_requested = true; }
+                        }
                         pressed_keys.insert(key);
                     } else {
                         pressed_keys.remove(&key);
