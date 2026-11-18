@@ -3,6 +3,8 @@
 //! Produces indexed quads with block state and sampled block/sky light.
 //! Non-cube block shapes and texture-atlas UV selection are separate future stages.
 
+use std::collections::HashMap;
+
 use crate::resource_pack::{FaceDirection, ResolvedBlockModel, ResourceError};
 use crate::world::{BlockPos, BlockState, ChunkPos, World};
 
@@ -240,6 +242,86 @@ pub fn build_model_mesh(
     Ok(mesh)
 }
 
+/// Models registered for concrete legacy block states (combined ID + metadata).
+#[derive(Clone, Debug, Default)]
+pub struct BlockModelRegistry {
+    models: HashMap<BlockState, ResolvedBlockModel>,
+}
+
+impl BlockModelRegistry {
+    pub fn insert(&mut self, state: BlockState, model: ResolvedBlockModel) -> Option<ResolvedBlockModel> {
+        self.models.insert(state, model)
+    }
+
+    pub fn get(&self, state: BlockState) -> Option<&ResolvedBlockModel> {
+        self.models.get(&state)
+    }
+
+    pub fn len(&self) -> usize { self.models.len() }
+    pub fn is_empty(&self) -> bool { self.models.is_empty() }
+}
+
+fn cullface_neighbor(position: BlockPos, face: FaceDirection) -> BlockPos {
+    match face {
+        FaceDirection::Down => BlockPos::new(position.x, position.y - 1, position.z),
+        FaceDirection::Up => BlockPos::new(position.x, position.y + 1, position.z),
+        FaceDirection::North => BlockPos::new(position.x, position.y, position.z - 1),
+        FaceDirection::South => BlockPos::new(position.x, position.y, position.z + 1),
+        FaceDirection::West => BlockPos::new(position.x - 1, position.y, position.z),
+        FaceDirection::East => BlockPos::new(position.x + 1, position.y, position.z),
+    }
+}
+
+/// Build one placed block model and omit faces hidden by adjacent full-cube blocks.
+pub fn build_world_block_model_mesh(
+    world: &World,
+    position: BlockPos,
+    model: &ResolvedBlockModel,
+) -> Result<ModelMesh, ResourceError> {
+    let mut source = build_model_mesh(model, [position.x as f32, position.y as f32, position.z as f32])?;
+    let mut visible = ModelMesh::default();
+    for quad in source.vertices.chunks_exact(4) {
+        let culled = quad[0].cullface
+            .map(|face| world.get_block(cullface_neighbor(position, face)).has_full_cube_collision())
+            .unwrap_or(false);
+        if culled { continue; }
+        let base = visible.vertices.len() as u32;
+        visible.vertices.extend_from_slice(quad);
+        visible.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
+        visible.quad_count += 1;
+    }
+    source = visible;
+    Ok(source)
+}
+
+/// Build a chunk mesh from a caller-populated block-state to model registry.
+pub fn build_chunk_model_mesh(
+    world: &World,
+    chunk_pos: ChunkPos,
+    registry: &BlockModelRegistry,
+) -> Result<ModelMesh, ResourceError> {
+    let mut output = ModelMesh::default();
+    let Some(chunk) = world.get_chunk(chunk_pos) else { return Ok(output); };
+    for y in 0..256_i32 {
+        for z in 0..16_u8 {
+            for x in 0..16_u8 {
+                let state = chunk.get_block(x, y, z);
+                let Some(model) = registry.get(state) else { continue; };
+                let position = BlockPos::new(
+                    chunk_pos.x * 16 + i32::from(x),
+                    y,
+                    chunk_pos.z * 16 + i32::from(z),
+                );
+                let block_mesh = build_world_block_model_mesh(world, position, model)?;
+                let base = output.vertices.len() as u32;
+                output.vertices.extend(block_mesh.vertices);
+                output.indices.extend(block_mesh.indices.into_iter().map(|index| index + base));
+                output.quad_count += block_mesh.quad_count;
+            }
+        }
+    }
+    Ok(output)
+}
 fn model_face_corners(from: [f32; 3], to: [f32; 3], face: FaceDirection) -> [[f32; 3]; 4] {
     let [x0, y0, z0] = from;
     let [x1, y1, z1] = to;
@@ -280,6 +362,45 @@ fn rotate_model_point(point: [f32; 3], rotation: &crate::resource_pack::ElementR
 mod tests {
     use super::*;
 
+    fn cube_model_with_cullfaces() -> ResolvedBlockModel {
+        use crate::resource_pack::{ModelElement, ModelFace};
+        let mut faces = std::collections::BTreeMap::new();
+        for face in [FaceDirection::Down, FaceDirection::Up, FaceDirection::North, FaceDirection::South, FaceDirection::West, FaceDirection::East] {
+            faces.insert(face, ModelFace {
+                texture: "#all".into(), uv: Some([0.0, 0.0, 16.0, 16.0]), cullface: Some(face),
+                rotation: 0, tint_index: None,
+            });
+        }
+        ResolvedBlockModel {
+            location: "minecraft:block/cube".into(), namespace: "minecraft".into(), ambient_occlusion: true,
+            textures: std::collections::BTreeMap::from([("all".into(), "blocks/stone".into())]),
+            elements: vec![ModelElement { from: [0.0; 3], to: [16.0; 3], rotation: None, shade: true, faces }],
+        }
+    }
+
+    #[test]
+    fn block_model_cullfaces_hide_faces_against_adjacent_full_cubes() {
+        let mut world = World::new();
+        world.set_block(BlockPos::new(1, 10, 0), BlockState(16));
+        let model = cube_model_with_cullfaces();
+        let mesh = build_world_block_model_mesh(&world, BlockPos::new(0, 10, 0), &model).unwrap();
+        assert_eq!(mesh.quad_count, 5);
+        assert_eq!(mesh.vertices.len(), 20);
+        assert_eq!(mesh.indices.len(), 30);
+        assert!(!mesh.vertices.chunks_exact(4).any(|quad| quad[0].face == FaceDirection::East));
+    }
+
+    #[test]
+    fn chunk_model_mesher_uses_registered_legacy_block_states() {
+        let mut world = World::new();
+        world.set_block(BlockPos::new(4, 32, 5), BlockState(16));
+        let mut registry = BlockModelRegistry::default();
+        registry.insert(BlockState(16), cube_model_with_cullfaces());
+        let mesh = build_chunk_model_mesh(&world, ChunkPos::new(0, 0), &registry).unwrap();
+        assert_eq!(mesh.quad_count, 6);
+        assert_eq!(mesh.vertices.len(), 24);
+        assert_eq!(mesh.indices.len(), 36);
+    }
     #[test]
     fn json_model_elements_generate_indexed_quads_with_texture_uv_and_cullface() {
         use crate::resource_pack::{ModelElement, ModelFace};

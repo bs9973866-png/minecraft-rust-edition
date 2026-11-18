@@ -19,7 +19,7 @@ impl ChunkPos {
     pub fn from_block(x: i32, z: i32) -> Self { Self::new(x.div_euclid(CHUNK_SIZE), z.div_euclid(CHUNK_SIZE)) }
 }
 
-#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, Eq, Hash, PartialEq)]
 pub struct BlockState(pub u16);
 impl BlockState {
     pub const AIR: Self = Self(0);
