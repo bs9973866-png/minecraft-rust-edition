@@ -12,6 +12,7 @@ pub mod physics;
 pub mod protocol;
 pub mod resource_pack;
 pub mod simulation;
+pub mod texture;
 pub mod world;
 
 pub const TARGET_VERSION: &str = "1.8.9";
