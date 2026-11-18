@@ -185,6 +185,10 @@ pub struct ModelMeshVertex {
     pub face: FaceDirection,
     pub cullface: Option<FaceDirection>,
     pub tint_index: Option<i32>,
+    /// Packed legacy block light sampled from the containing chunk (0..=15).
+    pub block_light: u8,
+    /// Packed legacy sky light sampled from the containing chunk (0..=15).
+    pub sky_light: u8,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -233,6 +237,8 @@ pub fn build_model_mesh(
                     face: *face_direction,
                     cullface: face.cullface,
                     tint_index: face.tint_index,
+                    block_light: 0,
+                    sky_light: 0,
                 });
             }
             mesh.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
@@ -390,9 +396,15 @@ pub fn build_chunk_model_mesh(
                 let (x_rotation, y_rotation) = registry.variant(state)
                     .map(|variant| (variant.x, variant.y))
                     .unwrap_or((0, 0));
-                let block_mesh = build_world_block_model_mesh_rotated(
+                let mut block_mesh = build_world_block_model_mesh_rotated(
                     world, position, model, x_rotation, y_rotation
                 )?;
+                let block_light = chunk.get_block_light(x, y, z);
+                let sky_light = chunk.get_sky_light(x, y, z);
+                for vertex in &mut block_mesh.vertices {
+                    vertex.block_light = block_light;
+                    vertex.sky_light = sky_light;
+                }
                 let base = output.vertices.len() as u32;
                 output.vertices.extend(block_mesh.vertices);
                 output.indices.extend(block_mesh.indices.into_iter().map(|index| index + base));
@@ -601,4 +613,42 @@ mod tests {
         assert!(mesh.is_empty());
         assert_eq!(mesh.chunk, ChunkPos::new(-7, 12));
     }
+    #[test]
+    fn model_chunk_mesh_carries_decoded_block_and_sky_light() {
+        use crate::world::{ChunkColumnData, ChunkSectionData};
+
+        let mut blocks = vec![0_u16; 4096];
+        let local_index = (4_usize << 8) | (3_usize << 4) | 2_usize;
+        blocks[local_index] = 16;
+        let mut block_light = vec![0_u8; 2048];
+        let mut sky_light = vec![0_u8; 2048];
+        let packed_index = local_index >> 1;
+        block_light[packed_index] = 7;
+        sky_light[packed_index] = 12;
+
+        let mut sections: [Option<ChunkSectionData>; 16] = std::array::from_fn(|_| None);
+        sections[1] = Some(ChunkSectionData {
+            blocks,
+            block_light,
+            sky_light: Some(sky_light),
+        });
+        let mut world = World::new();
+        world.apply_chunk_data(ChunkColumnData {
+            position: ChunkPos::new(0, 0),
+            ground_up: true,
+            unload: false,
+            sections,
+            biomes: None,
+        }).unwrap();
+
+        let mut registry = BlockModelRegistry::default();
+        registry.insert(BlockState(16), cube_model_with_cullfaces());
+        let mesh = build_chunk_model_mesh(&world, ChunkPos::new(0, 0), &registry).unwrap();
+
+        assert_eq!(mesh.quad_count, 6);
+        assert!(mesh.vertices.iter().all(|vertex| vertex.block_light == 7));
+        assert!(mesh.vertices.iter().all(|vertex| vertex.sky_light == 12));
+    }
+
+
 }
