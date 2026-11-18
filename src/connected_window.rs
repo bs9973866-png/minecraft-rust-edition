@@ -22,7 +22,7 @@ use crate::world::{ChunkPos, World};
 const WIDTH: usize = 960;
 const HEIGHT: usize = 600;
 
-type Snapshot = (World, [f32; 3], f32, f32);
+type Snapshot = (World, [f32; 3], f32, f32, bool);
 
 pub fn run_connected_window(address: &str, username: &str, resource_pack: Option<&str>) -> Result<(), Box<dyn Error>> {
     let loaded_assets = if let Some(path) = resource_pack {
@@ -41,6 +41,7 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
             let mut simulation = ClientSimulation::new(Vec3::new(0.0, 80.0, 0.0));
             loop {
                 let event = play.read_event().map_err(|e| e.to_string())?;
+                let server_correction = matches!(&event, PlayEvent::PlayerPositionLook(_) | PlayEvent::Respawn(_));
                 let important = matches!(&event,
                     PlayEvent::Chunk(_) | PlayEvent::ChunkBulk(_) |
                     PlayEvent::BlockChange(_) | PlayEvent::MultiBlockChange(_) |
@@ -52,7 +53,7 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
                     let p = simulation.player.position;
                     tx.send(Ok((simulation.world.clone(),
                         [p.x as f32, p.y as f32 + 1.62, p.z as f32],
-                        simulation.player.yaw, simulation.player.pitch))).ok();
+                        simulation.player.yaw, simulation.player.pitch, server_correction))).ok();
                 }
             }
         })();
@@ -76,10 +77,15 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
     while window.is_open() && !window.is_key_down(Key::Escape) {
         for update in rx.try_iter() {
             match update {
-                Ok((next_world, position, yaw, pitch)) => {
+                Ok((next_world, position, yaw, pitch, server_correction)) => {
                     world = next_world;
                     scene = if let Some(assets) = &loaded_assets { build_vanilla_world_mesh(&world, assets)? } else { build_world_mesh(&world) };
-                    if !connected { camera.position = position; camera.yaw = yaw; camera.pitch = pitch; connected = true; }
+                    if !connected || server_correction {
+                        camera.position = position;
+                        camera.yaw = yaw;
+                        camera.pitch = pitch;
+                        connected = true;
+                    }
                 }
                 Err(error) => last_error = Some(error),
             }
