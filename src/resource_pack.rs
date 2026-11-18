@@ -874,14 +874,14 @@ mod tests {
 
         let low_state = r#"{"variants":{"":{"model":"block/low"}}}"#;
         let high_state = r#"{"variants":{"":{"model":"block/child"}}}"#;
-        write_resource(&low, "assets/example/blockstates/test.json", low_state);
-        write_resource(&low, "assets/example/models/block/low.json", r#"{"textures":{"all":"blocks/low"}}"#);
-        write_resource(&low, "assets/example/models/block/shared.json", r##"{
+        write_file(&low, "assets/example/blockstates/test.json", low_state);
+        write_file(&low, "assets/example/models/block/low.json", r#"{"textures":{"all":"blocks/low"}}"#);
+        write_file(&low, "assets/example/models/block/shared.json", r##"{
             "textures":{"all":"blocks/shared"},
             "elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"north":{"texture":"#all"}}}]
         }"##);
-        write_resource(&high, "assets/example/blockstates/test.json", high_state);
-        write_resource(&high, "assets/example/models/block/child.json", r#"{
+        write_file(&high, "assets/example/blockstates/test.json", high_state);
+        write_file(&high, "assets/example/models/block/child.json", r#"{
             "parent":"block/shared",
             "textures":{"all":"blocks/high"}
         }"#);
