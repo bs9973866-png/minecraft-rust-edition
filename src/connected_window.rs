@@ -40,6 +40,28 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
             let login = login_offline(&host, port, &username, Duration::from_secs(15)).map_err(|e| e.to_string())?;
             let mut play = login.into_play();
             let mut simulation = ClientSimulation::new(Vec3::new(0.0, 80.0, 0.0));
+            let packet_sender = play.packet_sender();
+            let mut fallback_movement_rx = Some(movement_rx);
+            if let Some(sender) = packet_sender {
+                let movement_rx = fallback_movement_rx.take().expect("movement receiver is available");
+                let error_tx = tx.clone();
+                thread::Builder::new().name("protocol-47-movement".into()).spawn(move || {
+                    loop {
+                        let mut latest = match movement_rx.recv_timeout(Duration::from_millis(50)) {
+                            Ok(movement) => movement,
+                            Err(mpsc::RecvTimeoutError::Timeout) => continue,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                        };
+                        while let Ok(movement) = movement_rx.try_recv() {
+                            latest = movement;
+                        }
+                        if let Err(error) = sender.send_player_movement(latest, false) {
+                            error_tx.send(Err(error.to_string())).ok();
+                            break;
+                        }
+                    }
+                }).map_err(|error| error.to_string())?;
+            }
             loop {
                 let event = play.read_event().map_err(|e| e.to_string())?;
                 let server_correction = matches!(&event, PlayEvent::PlayerPositionLook(_) | PlayEvent::Respawn(_));
@@ -50,18 +72,20 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
                 if let Some(ack) = simulation.apply_play_event(&event).map_err(|e| e.to_string())? {
                     play.send_player_movement(ack, simulation.player.on_ground).map_err(|e| e.to_string())?;
                 }
-                // Drain queued UI transforms and write only the newest one. All writes
-                // stay on this network thread, so protocol frames cannot interleave.
-                let mut latest_movement = None;
-                while let Ok(movement) = movement_rx.try_recv() {
-                    latest_movement = Some(movement);
-                }
-                if let Some(movement) = latest_movement {
-                    simulation.player.position = Vec3::new(movement.x, movement.y, movement.z);
-                    simulation.player.yaw = movement.yaw;
-                    simulation.player.pitch = movement.pitch;
-                    play.send_player_movement(movement, simulation.player.on_ground)
-                        .map_err(|e| e.to_string())?;
+                // If the socket could not be cloned for a dedicated writer, retain
+                // the serialized reader-thread fallback instead of racing socket writes.
+                if let Some(movement_rx) = &fallback_movement_rx {
+                    let mut latest_movement = None;
+                    while let Ok(movement) = movement_rx.try_recv() {
+                        latest_movement = Some(movement);
+                    }
+                    if let Some(movement) = latest_movement {
+                        simulation.player.position = Vec3::new(movement.x, movement.y, movement.z);
+                        simulation.player.yaw = movement.yaw;
+                        simulation.player.pitch = movement.pitch;
+                        play.send_player_movement(movement, simulation.player.on_ground)
+                            .map_err(|e| e.to_string())?;
+                    }
                 }
                 if important {
                     let p = simulation.player.position;
