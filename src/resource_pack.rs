@@ -303,7 +303,13 @@ pub struct ResolvedBlockModel {
 impl ResolvedBlockModel {
     /// Resolve a texture name or variable, following chained #references.
     pub fn resolve_texture(&self, variable: &str) -> Result<String, ResourceError> {
-        let mut current = if variable.starts_with('#') { variable.to_owned() } else { format!("#{variable}") };
+        let mut current = if variable.starts_with('#') {
+            variable.to_owned()
+        } else if self.textures.contains_key(variable) {
+            format!("#{variable}")
+        } else {
+            return Ok(ResourceLocation::parse(variable, &self.namespace)?.canonical());
+        };
         let mut visited = Vec::new();
         for _ in 0..MAX_TEXTURE_DEPTH {
             if !current.starts_with('#') {
