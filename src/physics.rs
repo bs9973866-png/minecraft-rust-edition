@@ -232,13 +232,9 @@ fn clip_axis(world: &World, bounds: Aabb, mut movement: f64, axis: usize) -> f64
     for x in min_x..=max_x {
         for y in min_y..=max_y {
             for z in min_z..=max_z {
-                let state = world.get_block(BlockPos::new(x, y, z));
-                if !state.has_full_cube_collision() { continue; }
-
-                let block = Aabb::new(
-                    Vec3::new(f64::from(x), f64::from(y), f64::from(z)),
-                    Vec3::new(f64::from(x + 1), f64::from(y + 1), f64::from(z + 1)),
-                );
+                let position = BlockPos::new(x, y, z);
+                let state = world.get_block(position);
+                let Some(block) = state.collision_box_at(position) else { continue; };
                 if !overlaps_on_other_axes(bounds, block, axis) { continue; }
 
                 let player_min = axis_value(bounds.min, axis);
@@ -311,6 +307,40 @@ mod tests {
         assert!(!player.on_ground);
     }
 
+    #[test]
+    fn player_lands_on_slab_and_snow_layer_at_the_correct_height() {
+        let mut world = World::new();
+        world.set_block(BlockPos::new(0, 0, 0), BlockState((44 << 4) | 0));
+        let mut player = PlayerPhysics::new(Vec3::new(0.5, 3.0, 0.5));
+        for _ in 0..80 {
+            player.tick(&world, PlayerInput::default());
+            if player.on_ground { break; }
+        }
+        assert!(player.on_ground);
+        assert!((player.position.y - 0.5).abs() < 1.0e-9);
+
+        let mut snow_world = World::new();
+        snow_world.set_block(BlockPos::new(0, 0, 0), BlockState(78 << 4));
+        let mut snow_player = PlayerPhysics::new(Vec3::new(0.5, 2.0, 0.5));
+        for _ in 0..80 {
+            snow_player.tick(&snow_world, PlayerInput::default());
+            if snow_player.on_ground { break; }
+        }
+        assert!(snow_player.on_ground);
+        assert!((snow_player.position.y - 0.125).abs() < 1.0e-9);
+    }
+
+    #[test]
+    fn player_collides_with_cactus_inset_and_not_its_outer_empty_margin() {
+        let mut world = World::new();
+        world.set_block(BlockPos::new(1, 1, 0), BlockState(81 << 4));
+        let mut player = PlayerPhysics::new(Vec3::new(0.4, 1.0, 0.5));
+        player.on_ground = true;
+        player.motion.x = 1.0;
+        let tick = player.tick(&world, PlayerInput::default());
+        assert!(tick.collided_horizontally);
+        assert!(player.position.x <= 0.6375 + 1.0e-9);
+    }
     #[test]
     fn full_cube_wall_stops_horizontal_motion() {
         let mut world = World::new();

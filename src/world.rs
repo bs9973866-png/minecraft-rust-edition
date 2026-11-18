@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use crate::entity::{EntityEvent, EntityState};
-use crate::math::Vec3;
+use crate::math::{Aabb, Vec3};
 
 pub const WORLD_HEIGHT: i32 = 256;
 pub const CHUNK_SIZE: i32 = 16;
@@ -36,12 +36,62 @@ impl BlockState {
         matches!(self.block_id(),
             1 | 2 | 3 | 4 | 5 | 7 | 12 | 13 | 14 | 15 | 16 | 17 |
             19 | 20 | 21 | 22 | 23 | 24 | 25 | 35 | 41 | 42 | 43 |
-            45 | 46 | 47 | 48 | 49 | 52 | 56 | 57 | 58 | 61 | 62 |
+            45 | 46 | 47 | 48 | 49 | 52 | 56 | 57 | 58 | 60 | 61 | 62 |
             73 | 74 | 79 | 80 | 82 | 84 | 86 | 87 | 89 | 91 | 95 |
             97 | 98 | 99 | 100 | 103 | 110 | 112 | 121 | 123 | 129 |
             133 | 138 | 152 | 153 | 155 | 159 | 162 | 165 | 166 |
             168 | 169 | 170 | 172 | 173 | 174 | 179 | 181
         )
+    }
+
+    /// Return this block's supported legacy collision box in world coordinates.
+    /// Blocks with connected/rotated shapes are deliberately left for later shape providers.
+    pub fn collision_box_at(self, position: BlockPos) -> Option<Aabb> {
+        let x = f64::from(position.x);
+        let y = f64::from(position.y);
+        let z = f64::from(position.z);
+        let metadata = (self.0 & 0x0f) as u8;
+        let box_from_local = |min: [f64; 3], max: [f64; 3]| {
+            Aabb::new(
+                Vec3::new(x + min[0], y + min[1], z + min[2]),
+                Vec3::new(x + max[0], y + max[1], z + max[2]),
+            )
+        };
+
+        match self.block_id() {
+            // Stone and wood single slabs: metadata bit 3 selects the upper half.
+            44 | 126 => {
+                let (min_y, max_y) = if metadata & 0x08 != 0 {
+                    (0.5, 1.0)
+                } else {
+                    (0.0, 0.5)
+                };
+                Some(box_from_local([0.0, min_y, 0.0], [1.0, max_y, 1.0]))
+            }
+            // Snow layer: legacy metadata 0..=7 represents one through eight layers.
+            78 => {
+                let height = f64::from(metadata.min(7) + 1) / 8.0;
+                Some(box_from_local([0.0, 0.0, 0.0], [1.0, height, 1.0]))
+            }
+            // Carpet.
+            171 => Some(box_from_local([0.0, 0.0, 0.0], [1.0, 0.0625, 1.0])),
+            // Soul sand's collision surface is one eighth below the block top.
+            88 => Some(box_from_local([0.0, 0.0, 0.0], [1.0, 0.875, 1.0])),
+            // Cactus has a one-sixteenth inset on every horizontal side.
+            81 => Some(box_from_local([0.0625, 0.0, 0.0625], [0.9375, 1.0, 0.9375])),
+            // Cake shrinks from one side as bites are removed.
+            92 => {
+                let min_x = (1.0 + 2.0 * f64::from(metadata.min(6))) / 16.0;
+                Some(box_from_local([min_x, 0.0, 0.0625], [0.9375, 0.5, 0.9375]))
+            }
+            // Beds use the legacy half-block collision height.
+            26 => Some(box_from_local([0.0, 0.0, 0.0], [1.0, 0.5625, 1.0])),
+            // Full-cube collision subset (including farmland's full collision AABB in 1.8.9).
+            _ if self.has_full_cube_collision() => {
+                Some(box_from_local([0.0, 0.0, 0.0], [1.0, 1.0, 1.0]))
+            }
+            _ => None,
+        }
     }
 
     /// Block slipperiness used by ground movement; ordinary blocks use 0.6.
@@ -465,6 +515,45 @@ mod tests {
         ]);
         assert_eq!(world.get_block(BlockPos::new(-1, 64, 2)), BlockState::AIR);
         assert_eq!(world.get_block(BlockPos::new(3, 70, 4)), BlockState(9));
+    }
+    #[test]
+    fn collision_shapes_cover_slabs_snow_carpet_soul_sand_and_cactus() {
+        let position = BlockPos::new(-3, 10, 7);
+        let lower_slab = BlockState((44 << 4) | 0).collision_box_at(position).unwrap();
+        assert_eq!(lower_slab.min.y, 10.0);
+        assert_eq!(lower_slab.max.y, 10.5);
+
+        let upper_slab = BlockState((44 << 4) | 8).collision_box_at(position).unwrap();
+        assert_eq!(upper_slab.min.y, 10.5);
+        assert_eq!(upper_slab.max.y, 11.0);
+
+        let first_snow_layer = BlockState(78 << 4).collision_box_at(position).unwrap();
+        assert!((first_snow_layer.max.y - 10.125).abs() < 1.0e-9);
+        let eighth_snow_layer = BlockState((78 << 4) | 7).collision_box_at(position).unwrap();
+        assert_eq!(eighth_snow_layer.max.y, 11.0);
+
+        let carpet = BlockState(171 << 4).collision_box_at(position).unwrap();
+        assert!((carpet.max.y - 10.0625).abs() < 1.0e-9);
+        let soul_sand = BlockState(88 << 4).collision_box_at(position).unwrap();
+        assert_eq!(soul_sand.max.y, 10.875);
+
+        let cactus = BlockState(81 << 4).collision_box_at(position).unwrap();
+        assert_eq!(cactus.min.x, -2.9375);
+        assert_eq!(cactus.max.x, -2.0625);
+        assert_eq!(cactus.min.z, 7.0625);
+        assert_eq!(cactus.max.z, 7.9375);
+
+        let water = BlockState(9 << 4);
+        assert!(water.collision_box_at(position).is_none());
+    }
+
+    #[test]
+    fn collision_registry_distinguishes_full_blocks_and_partial_blocks() {
+        assert!(BlockState(16).has_full_cube_collision());
+        assert!(BlockState(60 << 4).has_full_cube_collision());
+        assert!(!BlockState(44 << 4).has_full_cube_collision());
+        assert!(!BlockState(78 << 4).has_full_cube_collision());
+        assert_eq!(BlockState(60 << 4).collision_box_at(BlockPos::new(0, 0, 0)).unwrap().max.y, 1.0);
     }
     #[test]
     fn negative_coordinates_use_floor_chunk_math() {
