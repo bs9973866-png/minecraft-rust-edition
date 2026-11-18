@@ -6,7 +6,7 @@ use std::collections::BTreeMap;
 use std::error::Error;
 use std::sync::mpsc::{self, Receiver};
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use minifb::{Key, MouseMode, Window, WindowOptions};
 
@@ -73,6 +73,7 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
     let mut connected = false;
     let mut scene = crate::mesh::ModelMesh::default();
     let mut last_error: Option<String> = None;
+    let mut previous_frame = Instant::now();
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
         for update in rx.try_iter() {
@@ -91,7 +92,11 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
             }
         }
 
-        let dt = 1.0 / 30.0;
+        // Base movement on elapsed wall time, not the requested window FPS.
+        // Clamp long pauses (for example, while resizing) to avoid a camera jump.
+        let now = Instant::now();
+        let dt = now.duration_since(previous_frame).as_secs_f32().clamp(0.0, 0.1);
+        previous_frame = now;
         let keys = window.get_keys();
         let mut forward = 0.0_f32;
         let mut strafe = 0.0_f32;
