@@ -8,6 +8,7 @@ use std::io::Cursor;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TextureError {
     Png(String),
+    Resource(String),
     UnsupportedColorType,
     InvalidDimensions,
     TextureTooLarge { name: String, width: u32, height: u32 },
@@ -21,6 +22,7 @@ impl fmt::Display for TextureError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Png(message) => write!(f, "PNG decode error: {message}"),
+            Self::Resource(message) => write!(f, "resource pack texture error: {message}"),
             Self::UnsupportedColorType => write!(f, "unsupported decoded PNG color type"),
             Self::InvalidDimensions => write!(f, "texture has zero dimensions"),
             Self::TextureTooLarge { name, width, height } => {
@@ -160,6 +162,30 @@ impl TextureAtlasBuilder {
 
     pub fn add_png(&mut self, name: impl Into<String>, bytes: &[u8]) -> Result<(), TextureError> {
         self.add_image(name, TextureImage::from_png(bytes)?)
+    }
+
+    /// Load every texture used by a resolved model directly from an extracted resource pack.
+    /// Already-added texture locations are skipped, so multiple models can share atlas entries.
+    pub fn add_model_textures(
+        &mut self,
+        pack: &crate::resource_pack::ResourcePack,
+        model: &crate::resource_pack::ResolvedBlockModel,
+    ) -> Result<usize, TextureError> {
+        let mut added = 0;
+        for element in &model.elements {
+            for face in element.faces.values() {
+                let location = model.resolve_face_texture(face)
+                    .map_err(|error| TextureError::Resource(error.to_string()))?;
+                if self.textures.contains_key(&location) {
+                    continue;
+                }
+                let bytes = pack.read_texture(&location, "minecraft")
+                    .map_err(|error| TextureError::Resource(error.to_string()))?;
+                self.add_png(location, &bytes)?;
+                added += 1;
+            }
+        }
+        Ok(added)
     }
 
     pub fn add_image(&mut self, name: impl Into<String>, image: TextureImage) -> Result<(), TextureError> {
@@ -337,6 +363,48 @@ mod tests {
         let padding_index = ((stone.y * atlas.width + (stone.x - 1)) * 4) as usize;
         assert_eq!(&atlas.rgba[padding_index..padding_index + 4], &[255, 0, 0, 255]);
         assert!(matches!(atlas.rect("missing"), Err(TextureError::MissingTexture(_))));
+    }
+
+    #[test]
+    fn loads_model_textures_from_resource_pack_and_deduplicates_them() {
+        use crate::resource_pack::{
+            FaceDirection, ModelElement, ModelFace, ResolvedBlockModel, ResourcePack,
+        };
+        use std::collections::BTreeMap;
+        use std::fs;
+        use std::path::PathBuf;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root: PathBuf = std::env::temp_dir().join(format!("texture-pack-tests-{stamp}"));
+        let texture_path = root.join("assets/minecraft/textures/blocks/test.png");
+        fs::create_dir_all(texture_path.parent().unwrap()).unwrap();
+        fs::write(&texture_path, make_png(1, 1, png::ColorType::Rgba, &[4, 5, 6, 255])).unwrap();
+
+        let mut faces = BTreeMap::new();
+        faces.insert(FaceDirection::North, ModelFace {
+            texture: "#all".into(), uv: None, cullface: None, rotation: 0, tint_index: None,
+        });
+        let model = ResolvedBlockModel {
+            location: "minecraft:block/test".into(),
+            namespace: "minecraft".into(),
+            ambient_occlusion: true,
+            textures: BTreeMap::from([("all".into(), "blocks/test".into())]),
+            elements: vec![ModelElement {
+                from: [0.0; 3], to: [16.0; 3], rotation: None, shade: true, faces,
+            }],
+        };
+
+        let pack = ResourcePack::open(&root).unwrap();
+        let mut builder = TextureAtlasBuilder::default();
+        assert_eq!(builder.add_model_textures(&pack, &model).unwrap(), 1);
+        assert_eq!(builder.add_model_textures(&pack, &model).unwrap(), 0);
+        assert_eq!(builder.texture_count(), 1);
+        let atlas = builder.build().unwrap();
+        assert!(atlas.rect("minecraft:blocks/test").is_ok());
+        assert_eq!(atlas.rect("minecraft:blocks/test").unwrap().width, 1);
+
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
