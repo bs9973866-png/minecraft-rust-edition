@@ -24,7 +24,12 @@ const HEIGHT: usize = 600;
 
 type Snapshot = (World, [f32; 3], f32, f32);
 
-pub fn run_connected_window(address: &str, username: &str) -> Result<(), Box<dyn Error>> {
+pub fn run_connected_window(address: &str, username: &str, resource_pack: Option<&str>) -> Result<(), Box<dyn Error>> {
+    let loaded_assets = if let Some(path) = resource_pack {
+        let stack = crate::resource_pack::ResourcePackStack::open([path])?;
+        let specs = vanilla_block_specs();
+        Some(crate::asset_pipeline::LoadedBlockAssets::load(stack, specs)?)
+    } else { None };
     let (tx, rx) = mpsc::channel::<Result<Snapshot, String>>();
     let address = address.to_owned();
     let username = username.to_owned();
@@ -59,7 +64,7 @@ pub fn run_connected_window(address: &str, username: &str) -> Result<(), Box<dyn
         WIDTH, HEIGHT, WindowOptions { resize: true, ..WindowOptions::default() },
     )?;
     window.set_target_fps(30);
-    let atlas = diagnostic_atlas();
+    let atlas = loaded_assets.as_ref().map(|assets| assets.atlas.clone()).unwrap_or_else(diagnostic_atlas);
     let mut framebuffer = FrameBuffer::new(WIDTH as u32, HEIGHT as u32)?;
     let mut world = World::new();
     let mut camera = Camera { position: [0.0, 80.0, 0.0], far_plane: 192.0, ..Camera::default() };
@@ -73,7 +78,7 @@ pub fn run_connected_window(address: &str, username: &str) -> Result<(), Box<dyn
             match update {
                 Ok((next_world, position, yaw, pitch)) => {
                     world = next_world;
-                    scene = build_world_mesh(&world);
+                    scene = if let Some(assets) = &loaded_assets { build_vanilla_world_mesh(&world, assets)? } else { build_world_mesh(&world) };
                     if !connected { camera.position = position; camera.yaw = yaw; camera.pitch = pitch; connected = true; }
                 }
                 Err(error) => last_error = Some(error),
@@ -207,4 +212,41 @@ fn block_color(id: u16) -> (u8, u8, u8) {
         169 => (235, 225, 145), 172 => (185, 125, 85), 173 => (35, 35, 35),
         _ => (145, 135, 125),
     }
+}
+
+
+fn vanilla_block_specs() -> Vec<crate::asset_pipeline::BlockAssetSpec> {
+    use crate::asset_pipeline::BlockAssetSpec;
+    use crate::world::BlockState;
+    use std::collections::BTreeMap;
+    // Vanilla 1.8.9 blocks whose blockstate JSON uses the empty variant key.
+    // Metadata/property variants are added incrementally; unknown states are skipped.
+    let ids: [u16; 20] = [4, 7, 13, 14, 15, 16, 20, 45, 48, 49, 56, 57, 58, 79, 87, 89, 121, 133, 152, 173];
+    ids.into_iter().map(|id| {
+        let name = match id {
+            4 => "cobblestone", 7 => "bedrock", 13 => "gravel",
+            14 => "gold_ore", 15 => "iron_ore", 16 => "coal_ore",
+            20 => "glass", 45 => "bricks", 48 => "mossy_cobblestone",
+            49 => "obsidian", 56 => "diamond_ore", 57 => "diamond_block",
+            58 => "crafting_table", 79 => "ice", 87 => "netherrack",
+            89 => "glowstone", 121 => "end_stone", 133 => "emerald_block",
+            152 => "redstone_block", _ => "coal_block",
+        };
+        BlockAssetSpec::new(BlockState(id << 4), format!("minecraft:{name}"), BTreeMap::new(), id as u64)
+    }).collect()
+}
+
+fn build_vanilla_world_mesh(
+    world: &World,
+    assets: &crate::asset_pipeline::LoadedBlockAssets,
+) -> Result<ModelMesh, Box<dyn Error>> {
+    let mut output = ModelMesh::default();
+    for chunk_pos in world.chunk_positions() {
+        let chunk = assets.build_chunk_mesh(world, chunk_pos)?;
+        let base = output.vertices.len() as u32;
+        output.vertices.extend(chunk.vertices);
+        output.indices.extend(chunk.indices.into_iter().map(|index| index + base));
+        output.quad_count += chunk.quad_count;
+    }
+    Ok(output)
 }

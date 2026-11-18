@@ -17,7 +17,7 @@ fn print_help() {
     println!("  minecraft-rust --help");
     println!("  minecraft-rust --version");
     println!("  minecraft-rust --window");
-    println!("  minecraft-rust --connect-window HOST:PORT USERNAME");
+    println!("  minecraft-rust --connect-window HOST:PORT USERNAME [1.8.9-client.jar-or-resource-pack]");
     println!("  minecraft-rust --status HOST:PORT");
     println!("  minecraft-rust --connect-offline HOST:PORT USERNAME");
     println!();
@@ -26,6 +26,7 @@ fn print_help() {
     println!("--connect-offline opens a headless offline-mode Play session and reports world events.");
     println!("--window opens an interactive engine smoke-test preview.");
     println!("--connect-window logs in to an offline-mode 1.8.9 server and renders received chunks.");
+    println!("Pass the local 1.8.9 client JAR to load vanilla block models and textures.");
     println!("The preview is a renderer/input smoke test, not the complete Minecraft world.");
 }
 
@@ -154,8 +155,9 @@ fn run() -> Result<(), String> {
         Some("--connect-window") => {
             let address = args.next().ok_or_else(|| "missing server address; expected HOST:PORT".to_owned())?;
             let username = args.next().ok_or_else(|| "missing offline username".to_owned())?;
+            let resource_pack = args.next();
             if args.next().is_some() { return Err("too many arguments for --connect-window".to_owned()); }
-            minecraft_rust::connected_window::run_connected_window(&address, &username).map_err(|error| error.to_string())
+            minecraft_rust::connected_window::run_connected_window(&address, &username, resource_pack.as_deref()).map_err(|error| error.to_string())
         },
         Some("--version") => {
             println!("Minecraft Rust Edition {} (protocol {})", TARGET_VERSION, PROTOCOL_VERSION);
