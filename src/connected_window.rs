@@ -219,23 +219,69 @@ fn vanilla_block_specs() -> Vec<crate::asset_pipeline::BlockAssetSpec> {
     use crate::asset_pipeline::BlockAssetSpec;
     use crate::world::BlockState;
     use std::collections::BTreeMap;
-    // Vanilla 1.8.9 blocks whose blockstate JSON uses the empty variant key.
-    // Metadata/property variants are added incrementally; unknown states are skipped.
-    let ids: [u16; 20] = [4, 7, 13, 14, 15, 16, 20, 45, 48, 49, 56, 57, 58, 79, 87, 89, 121, 133, 152, 173];
-    ids.into_iter().map(|id| {
-        let name = match id {
-            4 => "cobblestone", 7 => "bedrock", 13 => "gravel",
-            14 => "gold_ore", 15 => "iron_ore", 16 => "coal_ore",
-            20 => "glass", 45 => "bricks", 48 => "mossy_cobblestone",
-            49 => "obsidian", 56 => "diamond_ore", 57 => "diamond_block",
-            58 => "crafting_table", 79 => "ice", 87 => "netherrack",
-            89 => "glowstone", 121 => "end_stone", 133 => "emerald_block",
-            152 => "redstone_block", _ => "coal_block",
-        };
-        BlockAssetSpec::new(BlockState(id << 4), format!("minecraft:{name}"), BTreeMap::new(), id as u64)
-    }).collect()
-}
 
+    // Protocol 47 stores legacy states as (block_id << 4) | metadata.
+    // These entries intentionally cover stable, single-model vanilla blocks.
+    // Metadata-driven families are added separately with explicit blockstate properties.
+    let simple: &[(u16, &str)] = &[
+        (4, "cobblestone"), (7, "bedrock"), (13, "gravel"),
+        (14, "gold_ore"), (15, "iron_ore"), (16, "coal_ore"),
+        (20, "glass"), (21, "lapis_ore"), (22, "lapis_block"),
+        (23, "dispenser"), (25, "noteblock"), (41, "gold_block"),
+        (42, "iron_block"), (45, "bricks"), (47, "bookshelf"),
+        (48, "mossy_cobblestone"), (49, "obsidian"), (52, "mob_spawner"),
+        (56, "diamond_ore"), (57, "diamond_block"), (58, "crafting_table"),
+        (61, "furnace"), (62, "lit_furnace"), (73, "redstone_ore"),
+        (74, "lit_redstone_ore"), (79, "ice"), (80, "snow"),
+        (82, "clay"), (84, "jukebox"), (87, "netherrack"),
+        (88, "soul_sand"), (89, "glowstone"), (91, "lit_pumpkin"),
+        (97, "monster_egg"), (98, "stonebrick"), (103, "melon_block"),
+        (110, "mycelium"), (112, "nether_brick"), (121, "end_stone"),
+        (123, "redstone_lamp"), (124, "lit_redstone_lamp"),
+        (129, "emerald_ore"), (133, "emerald_block"), (138, "beacon"),
+        (152, "redstone_block"), (153, "quartz_ore"), (155, "quartz_block"),
+        (165, "slime"), (166, "barrier"), (168, "prismarine"),
+        (169, "sea_lantern"), (173, "coal_block"), (174, "packed_ice"),
+        (179, "red_sandstone"), (181, "red_sandstone"),
+    ];
+    let mut specs = Vec::new();
+    for &(id, name) in simple {
+        specs.push(BlockAssetSpec::new(
+            BlockState(id << 4), format!("minecraft:{name}"), BTreeMap::new(), id as u64
+        ));
+    }
+
+    // Common metadata families with their 1.8 blockstate property values.
+    let families: &[(u16, &str, &[&str], &str)] = &[
+        (1, "stone", &["stone", "granite", "smooth_granite", "diorite", "smooth_diorite", "andesite", "smooth_andesite"], "variant"),
+        (3, "dirt", &["dirt", "coarse_dirt", "podzol"], "variant"),
+        (5, "planks", &["oak", "spruce", "birch", "jungle", "acacia", "dark_oak"], "variant"),
+        (12, "sand", &["sand", "red_sand"], "variant"),
+        (17, "log", &["oak", "spruce", "birch", "jungle"], "variant"),
+        (18, "leaves", &["oak", "spruce", "birch", "jungle"], "variant"),
+        (24, "sandstone", &["sandstone", "chiseled_sandstone", "smooth_sandstone"], "type"),
+        (35, "wool", &["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "silver", "cyan", "purple", "blue", "brown", "green", "red", "black"], "color"),
+        (159, "stained_hardened_clay", &["white", "orange", "magenta", "light_blue", "yellow", "lime", "pink", "gray", "silver", "cyan", "purple", "blue", "brown", "green", "red", "black"], "color"),
+    ];
+    for &(id, name, values, property) in families {
+        for (meta, value) in values.iter().enumerate() {
+            let mut properties = BTreeMap::new();
+            properties.insert(property.to_owned(), (*value).to_owned());
+            specs.push(BlockAssetSpec::new(
+                BlockState((id << 4) | meta as u16),
+                format!("minecraft:{name}"),
+                properties,
+                ((id as u64) << 8) | meta as u64,
+            ));
+        }
+    }
+
+    // Grass block has a single state family with a snowy boolean property.
+    let mut grass = BTreeMap::new();
+    grass.insert("snowy".to_owned(), "false".to_owned());
+    specs.push(BlockAssetSpec::new(BlockState(2 << 4), "minecraft:grass", grass, 2));
+    specs
+}
 fn build_vanilla_world_mesh(
     world: &World,
     assets: &crate::asset_pipeline::LoadedBlockAssets,
