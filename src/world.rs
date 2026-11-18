@@ -198,6 +198,11 @@ impl World {
     pub fn new() -> Self { Self::default() }
     pub fn chunk_count(&self) -> usize { self.chunks.len() }
 
+    /// Return the coordinates of all currently loaded chunk columns.
+    pub fn chunk_positions(&self) -> Vec<ChunkPos> {
+        self.chunks.keys().copied().collect()
+    }
+
     /// Clear all loaded chunks and tracked entities (for world/dimension changes).
     pub fn clear(&mut self) {
         self.chunks.clear();
