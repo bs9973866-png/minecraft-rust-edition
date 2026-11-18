@@ -37,7 +37,7 @@ pub fn run_connected_window(address: &str, username: &str) -> Result<(), Box<dyn
             tx.send(Ok((simulation.world.clone(), [0.0, 80.0, 0.0], 0.0, 0.0))).ok();
             loop {
                 let event = play.read_event().map_err(|e| e.to_string())?;
-                let important = matches!(event,
+                let important = matches!(&event,
                     PlayEvent::Chunk(_) | PlayEvent::ChunkBulk(_) |
                     PlayEvent::BlockChange(_) | PlayEvent::MultiBlockChange(_) |
                     PlayEvent::PlayerPositionLook(_) | PlayEvent::Respawn(_));
