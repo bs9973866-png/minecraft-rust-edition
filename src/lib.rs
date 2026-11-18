@@ -10,6 +10,7 @@ pub mod mesh;
 pub mod nbt;
 pub mod physics;
 pub mod protocol;
+pub mod resource_pack;
 pub mod simulation;
 pub mod world;
 
