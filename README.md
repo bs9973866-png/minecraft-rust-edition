@@ -58,7 +58,7 @@ The status command performs the Minecraft Java status handshake and prints the r
 1. Finish protocol 47 packet coverage, compression, encryption/authentication interfaces, and robust connection state handling.
 2. Decode chunk sections, palettes/legacy block states, lighting, metadata, NBT, inventories, and entities.
 3. Implement player physics, collision, interaction, inventory, and world ticking.
-4. Add a Rust renderer, input, audio, HUD, menus, and resource-pack loading.
+4. Add platform window/GPU presentation, keyboard and mouse input, audio, HUD, menus, and interaction wiring. A CPU triangle renderer, resource-pack-to-chunk asset pipeline, atlas UV remapping, and crosshair block targeting now exist as engine building blocks.
 5. Validate behavior against a legitimately installed Minecraft 1.8.9 client and compatible test servers.
 
 ## Clean-room and asset policy

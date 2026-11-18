@@ -22,7 +22,7 @@ fn print_help() {
     println!("Protocol target: Minecraft Java {TARGET_VERSION} (protocol {PROTOCOL_VERSION})");
     println!("--status probes the server status protocol.");
     println!("--connect-offline opens a headless offline-mode Play session and reports world events.");
-    println!("Online-mode authentication and graphical rendering are not implemented yet.");
+    println!("Online-mode authentication and the graphical window/input layer are not implemented yet.");
 }
 
 fn print_play_event(event: PlayEvent, world: &World) {
