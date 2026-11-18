@@ -129,7 +129,15 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
         if keys.contains(&Key::Right) { camera.yaw += 90.0 * dt; }
         if keys.contains(&Key::Up) { camera.pitch = (camera.pitch - 90.0 * dt).clamp(-89.0, 89.0); }
         if keys.contains(&Key::Down) { camera.pitch = (camera.pitch + 90.0 * dt).clamp(-89.0, 89.0); }
-        // Queue the latest camera transform for the protocol thread. Position is converted\n        // from eye height back to the server's feet-based player coordinate.\n        let _ = movement_tx.send(PlayerMove {\n            x: f64::from(camera.position[0]),\n            y: f64::from(camera.position[1]) - 1.62,\n            z: f64::from(camera.position[2]),\n            yaw: camera.yaw,\n            pitch: camera.pitch,\n        });\n\n        if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Pass) {
+        // Queue the latest camera transform for the protocol thread. Position is converted
+        // from eye height back to the server's feet-based player coordinate.
+        let _ = movement_tx.send(PlayerMove {
+            x: f64::from(camera.position[0]),
+            y: f64::from(camera.position[1]) - 1.62,
+            z: f64::from(camera.position[2]),
+            yaw: camera.yaw,
+            pitch: camera.pitch,
+        });\n\n        if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Pass) {
             if let Some((ox, oy)) = previous_mouse {
                 camera.yaw += (mx - ox) * 0.12;
                 camera.pitch = (camera.pitch + (my - oy) * 0.12).clamp(-89.0, 89.0);
