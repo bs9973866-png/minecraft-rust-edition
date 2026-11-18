@@ -120,6 +120,18 @@ impl TextureAtlas {
     pub fn uv_bounds(&self, name: &str) -> Result<[f32; 4], TextureError> {
         Ok(self.rect(name)?.uv_bounds(self.width, self.height))
     }
+
+    /// Remap model-local 0..1 UV coordinates into this atlas in place.
+    pub fn remap_model_mesh_uvs(&self, mesh: &mut crate::mesh::ModelMesh) -> Result<(), TextureError> {
+        for vertex in &mut mesh.vertices {
+            let [u0, v0, u1, v1] = self.uv_bounds(&vertex.texture)?;
+            vertex.uv = [
+                u0 + vertex.uv[0] * (u1 - u0),
+                v0 + vertex.uv[1] * (v1 - v0),
+            ];
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -325,6 +337,44 @@ mod tests {
         let padding_index = ((stone.y * atlas.width + (stone.x - 1)) * 4) as usize;
         assert_eq!(&atlas.rgba[padding_index..padding_index + 4], &[255, 0, 0, 255]);
         assert!(matches!(atlas.rect("missing"), Err(TextureError::MissingTexture(_))));
+    }
+
+    #[test]
+    fn remaps_model_mesh_uvs_into_the_named_atlas_region() {
+        let mut builder = TextureAtlasBuilder::new(16, 16, 1);
+        builder.add_image("minecraft:blocks/stone", TextureImage {
+            width: 2, height: 2, rgba: vec![255; 16]
+        }).unwrap();
+        builder.add_image("minecraft:blocks/dirt", TextureImage {
+            width: 2, height: 2, rgba: vec![0; 16]
+        }).unwrap();
+        let atlas = builder.build().unwrap();
+        let stone_bounds = atlas.uv_bounds("minecraft:blocks/stone").unwrap();
+        let mut mesh = crate::mesh::ModelMesh {
+            vertices: vec![
+                crate::mesh::ModelMeshVertex {
+                    position: [0.0, 0.0, 0.0],
+                    uv: [0.0, 0.0],
+                    texture: "minecraft:blocks/stone".into(),
+                    face: crate::resource_pack::FaceDirection::North,
+                    cullface: None,
+                    tint_index: None,
+                },
+                crate::mesh::ModelMeshVertex {
+                    position: [1.0, 1.0, 1.0],
+                    uv: [1.0, 1.0],
+                    texture: "minecraft:blocks/stone".into(),
+                    face: crate::resource_pack::FaceDirection::North,
+                    cullface: None,
+                    tint_index: None,
+                },
+            ],
+            indices: vec![0, 1],
+            quad_count: 0,
+        };
+        atlas.remap_model_mesh_uvs(&mut mesh).unwrap();
+        assert_eq!(mesh.vertices[0].uv, [stone_bounds[0], stone_bounds[1]]);
+        assert_eq!(mesh.vertices[1].uv, [stone_bounds[2], stone_bounds[3]]);
     }
 
     #[test]
