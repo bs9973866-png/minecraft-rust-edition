@@ -186,11 +186,27 @@ pub fn render_mesh(
             &mesh.vertices[triangle[1] as usize],
             &mesh.vertices[triangle[2] as usize],
         ];
-        let Some(a) = project_vertex(source[0], camera, right, up, forward, focal, cx, cy) else { continue; };
-        let Some(b) = project_vertex(source[1], camera, right, up, forward, focal, cx, cy) else { continue; };
-        let Some(c) = project_vertex(source[2], camera, right, up, forward, focal, cx, cy) else { continue; };
-        if rasterize_triangle(target, atlas, [a, b, c], camera.near_plane, camera.far_plane) {
-            stats.rasterized_triangles += 1;
+        let camera_triangle = [
+            transform_vertex(source[0], camera, right, up, forward),
+            transform_vertex(source[1], camera, right, up, forward),
+            transform_vertex(source[2], camera, right, up, forward),
+        ];
+        let clipped_near = clip_depth_plane(&camera_triangle, camera.near_plane, true);
+        let clipped = clip_depth_plane(&clipped_near, camera.far_plane, false);
+        if clipped.len() < 3 { continue; }
+        let screen_vertices: Vec<_> = clipped.iter()
+            .map(|vertex| project_camera_vertex(*vertex, focal, cx, cy))
+            .collect();
+        for index in 1..(screen_vertices.len() - 1) {
+            if rasterize_triangle(
+                target,
+                atlas,
+                [screen_vertices[0], screen_vertices[index], screen_vertices[index + 1]],
+                camera.near_plane,
+                camera.far_plane,
+            ) {
+                stats.rasterized_triangles += 1;
+            }
         }
     }
 
@@ -198,35 +214,82 @@ pub fn render_mesh(
     Ok(stats)
 }
 
-fn project_vertex(
+fn transform_vertex(
     vertex: &ModelMeshVertex,
     camera: &Camera,
     right: [f32; 3],
     up: [f32; 3],
     forward: [f32; 3],
-    focal: f32,
-    center_x: f32,
-    center_y: f32,
-) -> Option<ScreenVertex> {
+) -> CameraVertex {
     let relative = [
         vertex.position[0] - camera.position[0],
         vertex.position[1] - camera.position[1],
         vertex.position[2] - camera.position[2],
     ];
     let dot = |axis: [f32; 3]| relative[0] * axis[0] + relative[1] * axis[1] + relative[2] * axis[2];
-    let x = dot(right);
-    let y = dot(up);
-    let z = dot(forward);
-    if !z.is_finite() || z <= camera.near_plane || z >= camera.far_plane { return None; }
-    Some(ScreenVertex {
-        x: center_x + x * focal / z,
-        y: center_y - y * focal / z,
-        z,
+    CameraVertex {
+        x: dot(right),
+        y: dot(up),
+        z: dot(forward),
         u: vertex.uv[0],
         v: vertex.uv[1],
         block_light: f32::from(vertex.block_light.min(15)),
         sky_light: f32::from(vertex.sky_light.min(15)),
-    })
+    }
+}
+
+/// Clip a camera-space polygon against one depth plane.
+fn clip_depth_plane(vertices: &[CameraVertex], plane: f32, keep_greater: bool) -> Vec<CameraVertex> {
+    if vertices.is_empty() { return Vec::new(); }
+    let inside = |vertex: CameraVertex| {
+        if keep_greater { vertex.z >= plane } else { vertex.z <= plane }
+    };
+    let interpolate = |a: CameraVertex, b: CameraVertex| {
+        let denominator = b.z - a.z;
+        let t = if denominator.abs() < f32::EPSILON { 0.0 } else { ((plane - a.z) / denominator).clamp(0.0, 1.0) };
+        CameraVertex {
+            x: a.x + (b.x - a.x) * t,
+            y: a.y + (b.y - a.y) * t,
+            z: plane,
+            u: a.u + (b.u - a.u) * t,
+            v: a.v + (b.v - a.v) * t,
+            block_light: a.block_light + (b.block_light - a.block_light) * t,
+            sky_light: a.sky_light + (b.sky_light - a.sky_light) * t,
+        }
+    };
+
+    let mut output = Vec::with_capacity(vertices.len() + 1);
+    let mut previous = *vertices.last().unwrap();
+    let mut previous_inside = inside(previous);
+    for current in vertices.iter().copied() {
+        let current_inside = inside(current);
+        if current_inside != previous_inside {
+            output.push(interpolate(previous, current));
+        }
+        if current_inside {
+            output.push(current);
+        }
+        previous = current;
+        previous_inside = current_inside;
+    }
+    output
+}
+
+fn project_camera_vertex(
+    vertex: CameraVertex,
+    focal: f32,
+    center_x: f32,
+    center_y: f32,
+) -> ScreenVertex {
+    ScreenVertex {
+        x: center_x + vertex.x * focal / vertex.z,
+        y: center_y - vertex.y * focal / vertex.z,
+        z: vertex.z,
+        u: vertex.u,
+        v: vertex.v,
+        block_light: vertex.block_light,
+        sky_light: vertex.sky_light,
+    }
 }
 
 fn edge(a: ScreenVertex, b: ScreenVertex, x: f32, y: f32) -> f32 {
@@ -359,13 +422,26 @@ mod tests {
     }
 
     #[test]
-    fn skips_triangles_behind_the_near_plane_and_rejects_bad_indices() {
-        let mut target = FrameBuffer::new(32, 32).unwrap();
-        let stats = render_mesh(&mut target, &triangle_mesh(0.01, 15), &red_atlas(), &Camera {
+    fn clips_triangles_at_near_and_far_planes() {
+        let mut target = FrameBuffer::new(64, 64).unwrap();
+        let mut crossing_near = triangle_mesh(2.0, 15);
+        crossing_near.vertices[0].position[2] = 0.01;
+        let stats = render_mesh(&mut target, &crossing_near, &red_atlas(), &Camera {
             position: [0.0, 0.0, 0.0],
             ..Camera::default()
         }).unwrap();
-        assert_eq!(stats.rasterized_triangles, 0);
+        assert!(stats.rasterized_triangles >= 1);
+        assert!(stats.shaded_pixels > 0);
+
+        target.clear(0);
+        let mut crossing_far = triangle_mesh(3.0, 15);
+        crossing_far.vertices[0].position[2] = 600.0;
+        let stats = render_mesh(&mut target, &crossing_far, &red_atlas(), &Camera {
+            position: [0.0, 0.0, 0.0],
+            ..Camera::default()
+        }).unwrap();
+        assert!(stats.rasterized_triangles >= 1);
+
         assert!(matches!(
             render_mesh(&mut target, &ModelMesh {
                 vertices: vec![],
