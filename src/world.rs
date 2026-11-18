@@ -34,13 +34,13 @@ impl BlockState {
     /// carpets, plants and similar shapes) require their own collision boxes.
     pub fn has_full_cube_collision(self) -> bool {
         matches!(self.block_id(),
-            1 | 2 | 3 | 4 | 5 | 7 | 12 | 13 | 14 | 15 | 16 | 17 |
+            1 | 2 | 3 | 4 | 5 | 7 | 12 | 13 | 14 | 15 | 16 | 17 | 18 |
             19 | 20 | 21 | 22 | 23 | 24 | 25 | 29 | 33 | 35 | 41 | 42 |
             43 | 45 | 46 | 47 | 48 | 49 | 52 | 56 | 57 | 58 | 60 | 61 |
             62 | 73 | 74 | 79 | 80 | 82 | 84 | 86 | 87 | 89 | 91 | 95 |
             97 | 98 | 99 | 100 | 103 | 110 | 112 | 121 | 123 | 129 |
-            133 | 137 | 138 | 152 | 153 | 155 | 158 | 159 | 162 | 165 | 166 |
-            168 | 169 | 170 | 172 | 173 | 174 | 179 | 181
+            125 | 133 | 137 | 138 | 152 | 153 | 155 | 158 | 159 | 161 | 162 | 165 | 166 |
+            168 | 169 | 170 | 172 | 173 | 174 | 179 | 181 | 204
         )
     }
 
@@ -550,6 +550,17 @@ mod tests {
 
         let water = BlockState(9 << 4);
         assert!(water.collision_box_at(position).is_none());
+    }
+
+    #[test]
+    fn leaves_and_double_slabs_have_full_cube_collision() {
+        for block_id in [18, 125, 161, 181, 204] {
+            let state = BlockState(block_id << 4);
+            assert!(state.has_full_cube_collision(), "block {block_id}");
+            let bounds = state.collision_box_at(BlockPos::new(2, 3, 4)).unwrap();
+            assert_eq!(bounds.min, Vec3::new(2.0, 3.0, 4.0));
+            assert_eq!(bounds.max, Vec3::new(3.0, 4.0, 5.0));
+        }
     }
 
     #[test]
