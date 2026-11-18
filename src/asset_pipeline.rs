@@ -180,6 +180,7 @@ mod tests {
             [BlockAssetSpec::new(BlockState(32), "example:test", BTreeMap::new(), 0)],
         ).unwrap();
         let mut world = World::new();
+        world.set_block(BlockPos::new(0, 20, 0), BlockState(32));
         let mesh = assets.build_chunk_mesh(&world, ChunkPos::new(0, 0)).unwrap();
         assert_eq!(mesh.quad_count, 1);
         assert!(mesh.vertices.iter().all(|vertex| vertex.face == crate::resource_pack::FaceDirection::West));
