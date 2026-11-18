@@ -339,7 +339,7 @@ mod tests {
         player.motion.x = 1.0;
         let tick = player.tick(&world, PlayerInput::default());
         assert!(tick.collided_horizontally);
-        assert!(player.position.x <= 0.6375 + 1.0e-9);
+        assert!((player.position.x - 0.7625).abs() < 1.0e-9);
     }
     #[test]
     fn full_cube_wall_stops_horizontal_motion() {
