@@ -5,6 +5,7 @@ use std::fmt;
 use std::io::{self, Read, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
+use std::sync::{Arc, Mutex};
 
 use flate2::read::ZlibDecoder;
 use flate2::write::ZlibEncoder;
@@ -1110,6 +1111,7 @@ pub enum PlayEvent {
 pub struct PlaySession {
     pub identity: LoginSuccess,
     pub stream: PacketStream<TcpStream>,
+    writer: Option<Arc<Mutex<PacketStream<TcpStream>>>>,
     pub entity_id: i32,
     pub dimension: Option<i8>,
     pub selected_hotbar_slot: u8,
@@ -1122,11 +1124,41 @@ pub struct PlaySession {
 
 impl LoginSession {
     pub fn into_play(self) -> PlaySession {
-        PlaySession { identity: self.identity, stream: self.stream, entity_id: 0, dimension: None, selected_hotbar_slot: 0, inventory_windows: std::collections::HashMap::new(), carried_item: None, open_windows: std::collections::HashMap::new(), window_properties: std::collections::HashMap::new(), transaction_results: std::collections::HashMap::new() }
+        let writer = self.stream.inner.try_clone().ok().map(|socket| {
+            let mut stream = PacketStream::new(socket);
+            stream.set_compression_threshold(self.stream.compression_threshold());
+            Arc::new(Mutex::new(stream))
+        });
+        PlaySession { identity: self.identity, stream: self.stream, writer, entity_id: 0, dimension: None, selected_hotbar_slot: 0, inventory_windows: std::collections::HashMap::new(), carried_item: None, open_windows: std::collections::HashMap::new(), window_properties: std::collections::HashMap::new(), transaction_results: std::collections::HashMap::new() }
+    }
+}
+
+#[derive(Clone)]
+pub struct PlayPacketSender {
+    writer: Arc<Mutex<PacketStream<TcpStream>>>,
+}
+
+impl PlayPacketSender {
+    pub fn send_player_movement(&self, movement: PlayerMove, on_ground: bool) -> Result<(), ProtocolError> {
+        let mut writer = self.writer.lock().map_err(|_| ProtocolError::Io(io::Error::new(io::ErrorKind::Other, "protocol writer lock poisoned")))?;
+        writer.write_packet(0x06, &player_position_look_payload(movement, on_ground))
     }
 }
 
 impl PlaySession {
+    pub fn packet_sender(&self) -> Option<PlayPacketSender> {
+        self.writer.as_ref().map(|writer| PlayPacketSender { writer: Arc::clone(writer) })
+    }
+
+    fn send_packet(&mut self, packet_id: i32, payload: &[u8]) -> Result<(), ProtocolError> {
+        if let Some(writer) = &self.writer {
+            let mut writer = writer.lock().map_err(|_| ProtocolError::Io(io::Error::new(io::ErrorKind::Other, "protocol writer lock poisoned")))?;
+            writer.write_packet(packet_id, payload)
+        } else {
+            self.stream.write_packet(packet_id, payload)
+        }
+    }
+
     /// Read and decode one serverbound Play packet. Unknown packet IDs are preserved verbatim.
     pub fn read_event(&mut self) -> Result<PlayEvent, ProtocolError> {
         let packet = self.stream.read_packet()?;
@@ -1878,6 +1910,7 @@ mod tests {
         let mut play = PlaySession {
             identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
             stream: PacketStream::new(socket),
+            writer: None,
             entity_id: 0,
             dimension: None,
             selected_hotbar_slot: 0,
@@ -1917,6 +1950,7 @@ mod tests {
         let mut play = PlaySession {
             identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
             stream: PacketStream::new(socket),
+            writer: None,
             entity_id: 0,
             dimension: None,
             selected_hotbar_slot: 0,
@@ -2025,6 +2059,7 @@ mod tests {
         let mut play = PlaySession {
             identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
             stream: PacketStream::new(socket),
+            writer: None,
             entity_id: 1, dimension: Some(0), selected_hotbar_slot: 0,
             inventory_windows: std::collections::HashMap::new(), carried_item: None,
             open_windows: std::collections::HashMap::new(), window_properties: std::collections::HashMap::new(), transaction_results: std::collections::HashMap::new(),
@@ -2125,6 +2160,7 @@ mod tests {
         let mut play = PlaySession {
             identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
             stream: PacketStream::new(socket),
+            writer: None,
             entity_id: 1,
             dimension: Some(0),
             selected_hotbar_slot: 0,
@@ -2220,6 +2256,7 @@ mod tests {
         let mut play = PlaySession {
             identity: LoginSuccess { uuid: "test".into(), username: "Player".into() },
             stream: PacketStream::new(socket), entity_id: 1, dimension: Some(0),
+            writer: None,
             selected_hotbar_slot: 0,
             inventory_windows: std::collections::HashMap::new(), carried_item: None,
             open_windows: std::collections::HashMap::new(), window_properties: std::collections::HashMap::new(),
