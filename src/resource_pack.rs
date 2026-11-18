@@ -195,7 +195,7 @@ pub struct BlockStateFile {
 /// Select one model variant by the weights in a stable, seed-driven way.
 pub fn select_weighted_variant<'a>(variants: &'a [ModelVariant], seed: u64) -> Option<&'a ModelVariant> {
     let total_weight = variants.iter().try_fold(0_u64, |total, variant| {
-        if variant.weight == 0 { None } else { total.checked_add(u64::from(variant.weight)) }
+        total.checked_add(u64::from(variant.weight))
     })?;
     if total_weight == 0 {
         return None;
@@ -461,7 +461,7 @@ impl ModelLoader {
             .ok_or_else(|| ResourceError::VariantMissing(block.to_owned()))?;
         let index = variants.iter().position(|variant| variant == selected)
             .ok_or_else(|| ResourceError::VariantMissing(block.to_owned()))?;
-        Ok(loaded.into_iter().nth(index).expect("selected index must exist"))
+        loaded.into_iter().nth(index).ok_or_else(|| ResourceError::VariantMissing(block.to_owned()))
     }
 
     pub fn load_model(&mut self, location: &str) -> Result<ResolvedBlockModel, ResourceError> {
@@ -719,6 +719,11 @@ mod tests {
         ];
         assert_eq!(select_weighted_variant(&variants, 42).unwrap(), select_weighted_variant(&variants, 42).unwrap());
         assert!(select_weighted_variant(&[], 42).is_none());
+        let zero_weight = vec![
+            ModelVariant { model: "block/unused".into(), x: 0, y: 0, uvlock: false, weight: 0 },
+            variants[1].clone(),
+        ];
+        assert_eq!(select_weighted_variant(&zero_weight, 0).unwrap().model, "block/common");
 
         let mut common_count = 0;
         let mut rare_count = 0;
