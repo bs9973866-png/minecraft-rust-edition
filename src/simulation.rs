@@ -28,6 +28,16 @@ impl ClientSimulation {
         self.player.tick(&self.world, input)
     }
 
+    /// Return the first non-air block under the player's crosshair.
+    pub fn target_block(&self, max_distance: f64) -> Option<crate::world::RayHit> {
+        let eye = Vec3::new(
+            self.player.position.x,
+            self.player.position.y + self.player.height * 0.9,
+            self.player.position.z,
+        );
+        self.world.raycast(eye, self.player.look_direction(), max_distance)
+    }
+
     /// Apply a decoded Play event to local simulation state.
     /// A returned PlayerMove must be sent back to the server as a C06 acknowledgement.
     pub fn apply_play_event(&mut self, event: &PlayEvent) -> Result<Option<PlayerMove>, WorldError> {
@@ -126,4 +136,19 @@ mod tests {
         assert_eq!(simulation.tick_count, 1);
         assert!(simulation.player.position.z > 0.5);
     }
+    #[test]
+    fn crosshair_raycast_uses_player_eye_height_and_yaw() {
+        let mut simulation = ClientSimulation::new(Vec3::new(0.5, 1.0, 0.5));
+        simulation.world.set_block(BlockPos::new(0, 2, 3), BlockState(16));
+        let forward_hit = simulation.target_block(5.0).unwrap();
+        assert_eq!(forward_hit.position, BlockPos::new(0, 2, 3));
+
+        simulation.world.clear();
+        simulation.player.yaw = 90.0;
+        simulation.world.set_block(BlockPos::new(-2, 2, 0), BlockState(16));
+        let side_hit = simulation.target_block(5.0).unwrap();
+        assert_eq!(side_hit.position, BlockPos::new(-2, 2, 0));
+    }
+
+
 }

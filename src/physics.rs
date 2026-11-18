@@ -86,6 +86,17 @@ impl PlayerPhysics {
         }
     }
 
+    /// Unit direction the first-person camera is facing (Minecraft yaw/pitch convention).
+    pub fn look_direction(&self) -> Vec3 {
+        let yaw = f64::from(self.yaw).to_radians();
+        let pitch = f64::from(self.pitch).to_radians();
+        Vec3::new(
+            -yaw.sin() * pitch.cos(),
+            -pitch.sin(),
+            yaw.cos() * pitch.cos(),
+        )
+    }
+
     pub fn bounding_box(&self) -> Aabb {
         let half = self.width * 0.5;
         Aabb::new(
