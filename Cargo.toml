@@ -10,6 +10,7 @@ flate2 = { version = "1.1", default-features = false, features = ["rust_backend"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 png = "0.17"
+zip = { version = "0.6", default-features = false, features = ["deflate"] }
 
 [lib]
 name = "minecraft_rust"

@@ -7,7 +7,8 @@
 use std::collections::{BTreeMap, HashMap};
 use std::error::Error as StdError;
 use std::fmt;
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
@@ -78,37 +79,87 @@ impl ResourceLocation {
 #[derive(Clone, Debug)]
 pub struct ResourcePack {
     root: PathBuf,
+    zipped: bool,
 }
 
 impl ResourcePack {
-    /// Open an extracted pack directory containing an assets folder.
+    /// Open either an extracted pack folder or a ZIP resource-pack archive.
+    /// Both forms must contain assets/<namespace>/ at the archive or folder root.
     pub fn open(root: impl AsRef<Path>) -> Result<Self, ResourceError> {
         let root = root.as_ref().to_path_buf();
-        let assets = root.join("assets");
-        if !assets.is_dir() {
-            return Err(ResourceError::Io {
-                path: assets.display().to_string(),
-                message: "expected an extracted pack with an assets directory".into(),
-            });
+        if root.is_dir() {
+            let assets = root.join("assets");
+            if !assets.is_dir() {
+                return Err(ResourceError::Io {
+                    path: assets.display().to_string(),
+                    message: "expected an extracted pack with an assets directory".into(),
+                });
+            }
+            return Ok(Self { root, zipped: false });
         }
-        Ok(Self { root })
+        if root.is_file() {
+            let file = File::open(&root).map_err(|error| ResourceError::Io {
+                path: root.display().to_string(),
+                message: error.to_string(),
+            })?;
+            let archive = zip::ZipArchive::new(file).map_err(|error| ResourceError::Io {
+                path: root.display().to_string(),
+                message: format!("invalid resource-pack ZIP: {error}"),
+            })?;
+            if !archive.file_names().any(|name| name.starts_with("assets/")) {
+                return Err(ResourceError::Io {
+                    path: root.display().to_string(),
+                    message: "ZIP archive has no assets/ directory".into(),
+                });
+            }
+            return Ok(Self { root, zipped: true });
+        }
+        Err(ResourceError::Io {
+            path: root.display().to_string(),
+            message: "resource pack path does not exist".into(),
+        })
     }
 
     pub fn root(&self) -> &Path {
         &self.root
     }
 
-    fn object_path(&self, kind: &str, extension: &str, location: &ResourceLocation) -> PathBuf {
-        self.root.join("assets")
-            .join(&location.namespace)
-            .join(kind)
-            .join(format!("{}.{}", location.path, extension))
+    fn object_path(&self, kind: &str, extension: &str, location: &ResourceLocation) -> String {
+        format!("assets/{}/{}/{}.{}", location.namespace, kind, location.path, extension)
     }
 
-    fn read_text(&self, path: &Path, location: &str) -> Result<String, ResourceError> {
-        fs::read_to_string(path).map_err(|error| ResourceError::Io {
-            path: format!("{location} ({})", path.display()),
+    fn read_bytes(&self, relative_path: &str) -> Result<Vec<u8>, ResourceError> {
+        if !self.zipped {
+            return fs::read(self.root.join(relative_path)).map_err(|error| ResourceError::Io {
+                path: format!("{} ({})", relative_path, self.root.display()),
+                message: error.to_string(),
+            });
+        }
+        let file = File::open(&self.root).map_err(|error| ResourceError::Io {
+            path: self.root.display().to_string(),
             message: error.to_string(),
+        })?;
+        let mut archive = zip::ZipArchive::new(file).map_err(|error| ResourceError::Io {
+            path: self.root.display().to_string(),
+            message: format!("invalid resource-pack ZIP: {error}"),
+        })?;
+        let mut entry = archive.by_name(relative_path).map_err(|error| ResourceError::Io {
+            path: format!("{} in {}", relative_path, self.root.display()),
+            message: error.to_string(),
+        })?;
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).map_err(|error| ResourceError::Io {
+            path: format!("{} in {}", relative_path, self.root.display()),
+            message: error.to_string(),
+        })?;
+        Ok(bytes)
+    }
+
+    fn read_text(&self, path: &str, location: &str) -> Result<String, ResourceError> {
+        let bytes = self.read_bytes(path)?;
+        String::from_utf8(bytes).map_err(|error| ResourceError::Io {
+            path: location.to_owned(),
+            message: format!("resource JSON is not UTF-8: {error}"),
         })
     }
 
@@ -123,10 +174,7 @@ impl ResourcePack {
     pub fn read_texture(&self, texture: &str, default_namespace: &str) -> Result<Vec<u8>, ResourceError> {
         let location = ResourceLocation::parse(texture, default_namespace)?;
         let path = self.object_path("textures", "png", &location);
-        fs::read(&path).map_err(|error| ResourceError::Io {
-            path: format!("{} ({})", location.canonical(), path.display()),
-            message: error.to_string(),
-        })
+        self.read_bytes(&path)
     }
 }
 
@@ -662,6 +710,29 @@ mod tests {
         assert!(pack.load_blockstate("example:test").is_ok());
         assert_eq!(pack.read_texture("blocks/test", "example").unwrap(), [137, 80, 78, 71]);
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn opens_zip_resource_packs_without_extracting_them() {
+        use std::io::Write;
+        use std::time::{SystemTime, UNIX_EPOCH};
+        use zip::write::FileOptions;
+        use zip::ZipWriter;
+
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let zip_path = std::env::temp_dir().join(format!("resource-pack-{stamp}.zip"));
+        let file = fs::File::create(&zip_path).unwrap();
+        let mut writer = ZipWriter::new(file);
+        writer.start_file("assets/example/blockstates/test.json", FileOptions::default()).unwrap();
+        writer.write_all(br#"{"variants":{"":{"model":"block/cube"}}}"#).unwrap();
+        writer.start_file("assets/example/textures/blocks/test.png", FileOptions::default()).unwrap();
+        writer.write_all(&[137, 80, 78, 71]).unwrap();
+        writer.finish().unwrap();
+
+        let pack = ResourcePack::open(&zip_path).unwrap();
+        assert!(pack.load_blockstate("example:test").is_ok());
+        assert_eq!(pack.read_texture("blocks/test", "example").unwrap(), [137, 80, 78, 71]);
+        fs::remove_file(zip_path).unwrap();
     }
 
     #[test]
