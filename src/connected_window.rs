@@ -137,7 +137,9 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
             z: f64::from(camera.position[2]),
             yaw: camera.yaw,
             pitch: camera.pitch,
-        });\n\n        if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Pass) {
+        });
+
+        if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Pass) {
             if let Some((ox, oy)) = previous_mouse {
                 camera.yaw += (mx - ox) * 0.12;
                 camera.pitch = (camera.pitch + (my - oy) * 0.12).clamp(-89.0, 89.0);
