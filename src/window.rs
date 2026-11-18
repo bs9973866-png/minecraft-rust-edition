@@ -34,7 +34,7 @@ pub fn run_window() -> Result<(), Box<dyn Error>> {
         far_plane: 128.0,
         ..Camera::default()
     };
-    let mut previous_mouse = None;
+    let mut previous_mouse: Option<(f32, f32)> = None;
     let mut last_frame = Instant::now();
 
     println!("[WINDOW] preview started; WASD move, Space/Shift up/down, mouse or arrows look, Esc quits");
