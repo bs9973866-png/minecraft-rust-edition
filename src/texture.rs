@@ -451,6 +451,8 @@ mod tests {
                     face: crate::resource_pack::FaceDirection::North,
                     cullface: None,
                     tint_index: None,
+                    block_light: 0,
+                    sky_light: 0,
                 },
                 crate::mesh::ModelMeshVertex {
                     position: [1.0, 1.0, 1.0],
@@ -459,6 +461,8 @@ mod tests {
                     face: crate::resource_pack::FaceDirection::North,
                     cullface: None,
                     tint_index: None,
+                    block_light: 0,
+                    sky_light: 0,
                 },
             ],
             indices: vec![0, 1],
