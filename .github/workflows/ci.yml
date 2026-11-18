@@ -30,12 +30,19 @@ jobs:
         run: cargo test --all-targets
       - name: Build release binary
         run: cargo build --release
+      - name: Create Windows launcher script
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Set-Content -Path target/release/Start-Minecraft-Rust.bat -Encoding ASCII -Value '@echo off', 'cd /d "%~dp0"', 'minecraft-rust.exe --window', 'if errorlevel 1 pause'
       - name: Upload Windows executable
         if: runner.os == 'Windows'
         uses: actions/upload-artifact@v4
         with:
           name: minecraft-rust-windows-x64
-          path: target/release/minecraft-rust.exe
+          path: |
+            target/release/minecraft-rust.exe
+            target/release/Start-Minecraft-Rust.bat
           if-no-files-found: error
       - name: Upload Linux binary
         if: runner.os == 'Linux'
