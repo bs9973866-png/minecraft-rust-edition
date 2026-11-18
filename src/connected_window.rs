@@ -28,7 +28,7 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
     let loaded_assets = if let Some(path) = resource_pack {
         let stack = crate::resource_pack::ResourcePackStack::open([path])?;
         let specs = vanilla_block_specs();
-        Some(crate::asset_pipeline::LoadedBlockAssets::load(stack, specs)?)
+        Some(crate::asset_pipeline::LoadedBlockAssets::load_available(stack, specs)?)
     } else { None };
     let (tx, rx) = mpsc::channel::<Result<Snapshot, String>>();
     let address = address.to_owned();

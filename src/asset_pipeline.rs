@@ -92,6 +92,38 @@ impl LoadedBlockAssets {
         })
     }
 
+    /// Load every compatible requested state, skipping missing blockstate/model entries.
+    /// This is useful for real-world versions where a partial state map is preferable
+    /// to aborting the entire viewer because one optional block variant is unavailable.
+    pub fn load_available<I>(pack_stack: ResourcePackStack, specs: I) -> Result<Self, AssetPipelineError>
+    where
+        I: IntoIterator<Item = BlockAssetSpec>,
+    {
+        let mut loader = ModelLoader::with_stack(pack_stack);
+        let mut registry = BlockModelRegistry::default();
+        let mut atlas_builder = TextureAtlasBuilder::default();
+        let mut loaded_states = 0usize;
+
+        for spec in specs {
+            let Ok((model, variant)) = loader.load_weighted_variant(
+                &spec.block_location, &spec.properties, spec.seed
+            ) else { continue; };
+            if atlas_builder.add_model_textures_from_stack(loader.pack_stack(), &model).is_err() {
+                continue;
+            }
+            registry.insert_variant(spec.state, model, variant);
+            loaded_states += 1;
+        }
+
+        if loaded_states == 0 {
+            return Err(AssetPipelineError::Resource(
+                "none of the requested block states could be loaded from this resource pack".to_owned()
+            ));
+        }
+
+        Ok(Self { registry, atlas: atlas_builder.build()?, loaded_states })
+    }
+
     /// Mesh one loaded chunk and remap model UVs into the prepared atlas.
     pub fn build_chunk_mesh(
         &self,
