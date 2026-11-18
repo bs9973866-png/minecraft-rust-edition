@@ -34,7 +34,6 @@ pub fn run_connected_window(address: &str, username: &str) -> Result<(), Box<dyn
             let login = login_offline(&host, port, &username, Duration::from_secs(15)).map_err(|e| e.to_string())?;
             let mut play = login.into_play();
             let mut simulation = ClientSimulation::new(Vec3::new(0.0, 80.0, 0.0));
-            tx.send(Ok((simulation.world.clone(), [0.0, 80.0, 0.0], 0.0, 0.0))).ok();
             loop {
                 let event = play.read_event().map_err(|e| e.to_string())?;
                 let important = matches!(&event,
@@ -66,6 +65,7 @@ pub fn run_connected_window(address: &str, username: &str) -> Result<(), Box<dyn
     let mut camera = Camera { position: [0.0, 80.0, 0.0], far_plane: 192.0, ..Camera::default() };
     let mut previous_mouse: Option<(f32, f32)> = None;
     let mut connected = false;
+    let mut scene = crate::mesh::ModelMesh::default();
     let mut last_error: Option<String> = None;
 
     while window.is_open() && !window.is_key_down(Key::Escape) {
@@ -73,6 +73,7 @@ pub fn run_connected_window(address: &str, username: &str) -> Result<(), Box<dyn
             match update {
                 Ok((next_world, position, yaw, pitch)) => {
                     world = next_world;
+                    scene = build_world_mesh(&world);
                     if !connected { camera.position = position; camera.yaw = yaw; camera.pitch = pitch; connected = true; }
                 }
                 Err(error) => last_error = Some(error),
@@ -111,8 +112,7 @@ pub fn run_connected_window(address: &str, username: &str) -> Result<(), Box<dyn
             framebuffer = FrameBuffer::new(w as u32, h as u32)?;
         }
         framebuffer.clear(0x006C_9BC4);
-        let mesh = build_world_mesh(&world);
-        render_mesh(&mut framebuffer, &mesh, &atlas, &camera)?;
+        render_mesh(&mut framebuffer, &scene, &atlas, &camera)?;
         window.set_title(&format!(
             "Minecraft Rust Edition — live chunks: {}{}",
             world.chunk_count(),
