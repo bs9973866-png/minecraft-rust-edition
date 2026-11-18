@@ -192,6 +192,32 @@ pub struct BlockStateFile {
     pub variants: BTreeMap<String, Vec<ModelVariant>>,
 }
 
+/// Select one model variant by the weights in a stable, seed-driven way.
+pub fn select_weighted_variant<'a>(variants: &'a [ModelVariant], seed: u64) -> Option<&'a ModelVariant> {
+    let total_weight = variants.iter().try_fold(0_u64, |total, variant| {
+        if variant.weight == 0 { None } else { total.checked_add(u64::from(variant.weight)) }
+    })?;
+    if total_weight == 0 {
+        return None;
+    }
+
+    // SplitMix64 gives a deterministic, well-distributed bucket without global RNG state.
+    let mut value = seed.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    value = (value ^ (value >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    value = (value ^ (value >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    value ^= value >> 31;
+    let mut bucket = value % total_weight;
+
+    for variant in variants {
+        let weight = u64::from(variant.weight);
+        if bucket < weight {
+            return Some(variant);
+        }
+        bucket -= weight;
+    }
+    None
+}
+
 impl BlockStateFile {
     pub fn variants_for(&self, properties: &BTreeMap<String, String>) -> Option<&[ModelVariant]> {
         for (key, variants) in &self.variants {
@@ -420,6 +446,22 @@ impl ModelLoader {
             output.push((self.load_model(&location.canonical())?, variant));
         }
         Ok(output)
+    }
+
+    /// Load the weighted blockstate choice using a caller-supplied stable seed.
+    pub fn load_weighted_variant(
+        &mut self,
+        block: &str,
+        properties: &BTreeMap<String, String>,
+        seed: u64,
+    ) -> Result<(ResolvedBlockModel, ModelVariant), ResourceError> {
+        let loaded = self.load_variant_models(block, properties)?;
+        let variants: Vec<ModelVariant> = loaded.iter().map(|(_, variant)| variant.clone()).collect();
+        let selected = select_weighted_variant(&variants, seed)
+            .ok_or_else(|| ResourceError::VariantMissing(block.to_owned()))?;
+        let index = variants.iter().position(|variant| variant == selected)
+            .ok_or_else(|| ResourceError::VariantMissing(block.to_owned()))?;
+        Ok(loaded.into_iter().nth(index).expect("selected index must exist"))
     }
 
     pub fn load_model(&mut self, location: &str) -> Result<ResolvedBlockModel, ResourceError> {
@@ -667,6 +709,28 @@ mod tests {
         assert_eq!(variants[0].y, 90);
         assert!(variants[0].uvlock);
         assert_eq!(variants[1].weight, 2);
+    }
+
+    #[test]
+    fn weighted_variant_selection_is_seeded_and_respects_zero_weights() {
+        let variants = vec![
+            ModelVariant { model: "block/rare".into(), x: 0, y: 0, uvlock: false, weight: 1 },
+            ModelVariant { model: "block/common".into(), x: 0, y: 0, uvlock: false, weight: 3 },
+        ];
+        assert_eq!(select_weighted_variant(&variants, 42).unwrap(), select_weighted_variant(&variants, 42).unwrap());
+        assert!(select_weighted_variant(&[], 42).is_none());
+
+        let mut common_count = 0;
+        let mut rare_count = 0;
+        for seed in 0..4096 {
+            match select_weighted_variant(&variants, seed).unwrap().model.as_str() {
+                "block/rare" => rare_count += 1,
+                "block/common" => common_count += 1,
+                other => panic!("unexpected model {other}"),
+            }
+        }
+        assert!(common_count > rare_count * 2);
+        assert_eq!(common_count + rare_count, 4096);
     }
 
     #[test]
