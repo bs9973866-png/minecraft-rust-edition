@@ -188,6 +188,30 @@ impl TextureAtlasBuilder {
         Ok(added)
     }
 
+    pub fn add_model_textures_from_stack(
+        &mut self,
+        pack: &crate::resource_pack::ResourcePackStack,
+        model: &crate::resource_pack::ResolvedBlockModel,
+    ) -> Result<usize, TextureError> {
+        let mut added = 0;
+        for element in &model.elements {
+            for face in element.faces.values() {
+                let location = model.resolve_face_texture(face)
+                    .map_err(|error| TextureError::Resource(error.to_string()))?;
+                if self.textures.contains_key(&location) {
+                    continue;
+                }
+                let bytes = pack.read_texture(&location, "minecraft")
+                    .map_err(|error| TextureError::Resource(error.to_string()))?;
+                self.add_png(location, &bytes)?;
+                added += 1;
+            }
+        }
+        Ok(added)
+    }
+
+
+
     pub fn add_image(&mut self, name: impl Into<String>, image: TextureImage) -> Result<(), TextureError> {
         let name = name.into();
         if name.is_empty() {

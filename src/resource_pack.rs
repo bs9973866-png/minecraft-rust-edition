@@ -27,6 +27,7 @@ pub enum ResourceError {
     TextureVariableMissing(String),
     TextureReferenceCycle(String),
     VariantMissing(String),
+    EmptyPackStack,
 }
 
 impl fmt::Display for ResourceError {
@@ -41,6 +42,7 @@ impl fmt::Display for ResourceError {
             Self::TextureVariableMissing(name) => write!(f, "missing model texture variable #{name}"),
             Self::TextureReferenceCycle(name) => write!(f, "texture variable cycle at #{name}"),
             Self::VariantMissing(key) => write!(f, "no blockstate variant matches {key}"),
+            Self::EmptyPackStack => write!(f, "resource pack stack must contain at least one pack"),
         }
     }
 }
@@ -128,12 +130,16 @@ impl ResourcePack {
         format!("assets/{}/{}/{}.{}", location.namespace, kind, location.path, extension)
     }
 
-    fn read_bytes(&self, relative_path: &str) -> Result<Vec<u8>, ResourceError> {
+    fn read_optional_bytes(&self, relative_path: &str) -> Result<Option<Vec<u8>>, ResourceError> {
         if !self.zipped {
-            return fs::read(self.root.join(relative_path)).map_err(|error| ResourceError::Io {
-                path: format!("{} ({})", relative_path, self.root.display()),
-                message: error.to_string(),
-            });
+            return match fs::read(self.root.join(relative_path)) {
+                Ok(bytes) => Ok(Some(bytes)),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+                Err(error) => Err(ResourceError::Io {
+                    path: format!("{} ({})", relative_path, self.root.display()),
+                    message: error.to_string(),
+                }),
+            };
         }
         let file = File::open(&self.root).map_err(|error| ResourceError::Io {
             path: self.root.display().to_string(),
@@ -143,16 +149,27 @@ impl ResourcePack {
             path: self.root.display().to_string(),
             message: format!("invalid resource-pack ZIP: {error}"),
         })?;
-        let mut entry = archive.by_name(relative_path).map_err(|error| ResourceError::Io {
-            path: format!("{} in {}", relative_path, self.root.display()),
-            message: error.to_string(),
-        })?;
+        let mut entry = match archive.by_name(relative_path) {
+            Ok(entry) => entry,
+            Err(zip::result::ZipError::FileNotFound) => return Ok(None),
+            Err(error) => return Err(ResourceError::Io {
+                path: format!("{} in {}", relative_path, self.root.display()),
+                message: error.to_string(),
+            }),
+        };
         let mut bytes = Vec::new();
         entry.read_to_end(&mut bytes).map_err(|error| ResourceError::Io {
             path: format!("{} in {}", relative_path, self.root.display()),
             message: error.to_string(),
         })?;
-        Ok(bytes)
+        Ok(Some(bytes))
+    }
+
+    fn read_bytes(&self, relative_path: &str) -> Result<Vec<u8>, ResourceError> {
+        self.read_optional_bytes(relative_path)?.ok_or_else(|| ResourceError::Io {
+            path: format!("{} ({})", relative_path, self.root.display()),
+            message: "resource file not found".into(),
+        })
     }
 
     fn read_text(&self, path: &str, location: &str) -> Result<String, ResourceError> {
@@ -174,6 +191,82 @@ impl ResourcePack {
     pub fn read_texture(&self, texture: &str, default_namespace: &str) -> Result<Vec<u8>, ResourceError> {
         let location = ResourceLocation::parse(texture, default_namespace)?;
         let path = self.object_path("textures", "png", &location);
+        self.read_bytes(&path)
+    }
+}
+
+/// Ordered resource-pack layers, from lowest to highest priority.
+/// Files are searched from the last pack backward; missing files fall back to lower layers.
+#[derive(Clone, Debug)]
+pub struct ResourcePackStack {
+    packs: Vec<ResourcePack>,
+}
+
+impl ResourcePackStack {
+    pub fn new(packs: Vec<ResourcePack>) -> Result<Self, ResourceError> {
+        if packs.is_empty() {
+            return Err(ResourceError::EmptyPackStack);
+        }
+        Ok(Self { packs })
+    }
+
+    pub fn single(pack: ResourcePack) -> Self {
+        Self { packs: vec![pack] }
+    }
+
+    pub fn open<I, P>(paths: I) -> Result<Self, ResourceError>
+    where
+        I: IntoIterator<Item = P>,
+        P: AsRef<Path>,
+    {
+        let packs = paths.into_iter()
+            .map(ResourcePack::open)
+            .collect::<Result<Vec<_>, _>>()?;
+        Self::new(packs)
+    }
+
+    pub fn len(&self) -> usize {
+        self.packs.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.packs.is_empty()
+    }
+
+    pub fn packs(&self) -> &[ResourcePack] {
+        &self.packs
+    }
+
+    fn read_bytes(&self, relative_path: &str) -> Result<Vec<u8>, ResourceError> {
+        for pack in self.packs.iter().rev() {
+            if let Some(bytes) = pack.read_optional_bytes(relative_path)? {
+                return Ok(bytes);
+            }
+        }
+        Err(ResourceError::Io {
+            path: relative_path.to_owned(),
+            message: "resource file not found in any pack layer".into(),
+        })
+    }
+
+    fn read_text(&self, relative_path: &str, location: &str) -> Result<String, ResourceError> {
+        let bytes = self.read_bytes(relative_path)?;
+        String::from_utf8(bytes).map_err(|error| ResourceError::Io {
+            path: location.to_owned(),
+            message: format!("resource JSON is not UTF-8: {error}"),
+        })
+    }
+
+    pub fn load_blockstate(&self, block: &str) -> Result<BlockStateFile, ResourceError> {
+        let location = ResourceLocation::parse(block, "minecraft")?;
+        let path = ResourcePack::object_path("blockstates", "json", &location);
+        let json = self.read_text(&path, &location.canonical())?;
+        parse_blockstate_json(&json, &location.canonical())
+    }
+
+    pub fn read_texture(&self, texture: &str, default_namespace: &str) -> Result<Vec<u8>, ResourceError> {
+        let location = ResourceLocation::parse(texture, default_namespace)?;
+        let path = ResourcePack::object_path("textures", "png", &location);
         self.read_bytes(&path)
     }
 }
@@ -407,16 +500,20 @@ impl ResolvedBlockModel {
 
 #[derive(Clone, Debug)]
 pub struct ModelLoader {
-    pack: ResourcePack,
+    pack: ResourcePackStack,
     cache: HashMap<String, ResolvedBlockModel>,
 }
 
 impl ModelLoader {
     pub fn new(pack: ResourcePack) -> Self {
+        Self::with_stack(ResourcePackStack::single(pack))
+    }
+
+    pub fn with_stack(pack: ResourcePackStack) -> Self {
         Self { pack, cache: HashMap::new() }
     }
 
-    pub fn pack(&self) -> &ResourcePack {
+    pub fn pack_stack(&self) -> &ResourcePackStack {
         &self.pack
     }
 
@@ -488,7 +585,7 @@ impl ModelLoader {
         }
 
         chain.push(canonical.clone());
-        let path = self.pack.object_path("models", "json", location);
+        let path = ResourcePack::object_path("models", "json", location);
         let json = self.pack.read_text(&path, &canonical)?;
         let raw: RawModel = serde_json::from_str(&json).map_err(|error| ResourceError::Json {
             location: canonical.clone(),
@@ -765,6 +862,43 @@ mod tests {
             "minecraft:blocks/stone"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn resource_pack_stack_overrides_high_priority_files_and_falls_back_for_parents() {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let low = std::env::temp_dir().join(format!("resource-pack-low-{stamp}"));
+        let high = std::env::temp_dir().join(format!("resource-pack-high-{stamp}"));
+
+        let low_state = r#"{"variants":{"":{"model":"block/low"}}}"#;
+        let high_state = r#"{"variants":{"":{"model":"block/child"}}}"#;
+        write_resource(&low, "assets/example/blockstates/test.json", low_state);
+        write_resource(&low, "assets/example/models/block/low.json", r#"{"textures":{"all":"blocks/low"}}"#);
+        write_resource(&low, "assets/example/models/block/shared.json", r#"{
+            "textures":{"all":"blocks/shared"},
+            "elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"north":{"texture":"#all"}}}]
+        }"#);
+        write_resource(&high, "assets/example/blockstates/test.json", high_state);
+        write_resource(&high, "assets/example/models/block/child.json", r#"{
+            "parent":"block/shared",
+            "textures":{"all":"blocks/high"}
+        }"#);
+
+        let stack = ResourcePackStack::open([low.clone(), high.clone()]).unwrap();
+        assert_eq!(stack.len(), 2);
+        let state = stack.load_blockstate("example:test").unwrap();
+        assert_eq!(state.variants_for_key("").unwrap()[0].model, "block/child");
+
+        let mut loader = ModelLoader::with_stack(stack.clone());
+        let model = loader.load_model("example:block/child").unwrap();
+        assert_eq!(model.elements.len(), 1);
+        let texture = model.resolve_face_texture(&model.elements[0].faces[&FaceDirection::North]).unwrap();
+        assert_eq!(texture, "example:blocks/high");
+
+        std::fs::remove_dir_all(low).unwrap();
+        std::fs::remove_dir_all(high).unwrap();
     }
 
     #[test]
