@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::error::Error;
-use std::sync::mpsc::{self, Receiver};
+use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -12,7 +12,7 @@ use minifb::{Key, MouseMode, Window, WindowOptions};
 
 use crate::math::Vec3;
 use crate::mesh::{build_chunk_mesh, ModelMesh, ModelMeshVertex};
-use crate::protocol::{login_offline, PlayEvent};
+use crate::protocol::{login_offline, PlayEvent, PlayerMove};
 use crate::renderer::{render_mesh, Camera, FrameBuffer};
 use crate::resource_pack::FaceDirection;
 use crate::simulation::ClientSimulation;
@@ -31,6 +31,7 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
         Some(crate::asset_pipeline::LoadedBlockAssets::load_available(stack, specs)?)
     } else { None };
     let (tx, rx) = mpsc::channel::<Result<Snapshot, String>>();
+    let (movement_tx, movement_rx) = mpsc::channel::<PlayerMove>();
     let address = address.to_owned();
     let username = username.to_owned();
     thread::Builder::new().name("protocol-47-reader".into()).spawn(move || {
@@ -115,7 +116,7 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
         if keys.contains(&Key::Right) { camera.yaw += 90.0 * dt; }
         if keys.contains(&Key::Up) { camera.pitch = (camera.pitch - 90.0 * dt).clamp(-89.0, 89.0); }
         if keys.contains(&Key::Down) { camera.pitch = (camera.pitch + 90.0 * dt).clamp(-89.0, 89.0); }
-        if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Pass) {
+        // Queue the latest camera transform for the protocol thread. Position is converted\n        // from eye height back to the server's feet-based player coordinate.\n        let _ = movement_tx.send(PlayerMove {\n            x: f64::from(camera.position[0]),\n            y: f64::from(camera.position[1]) - 1.62,\n            z: f64::from(camera.position[2]),\n            yaw: camera.yaw,\n            pitch: camera.pitch,\n        });\n\n        if let Some((mx, my)) = window.get_mouse_pos(MouseMode::Pass) {
             if let Some((ox, oy)) = previous_mouse {
                 camera.yaw += (mx - ox) * 0.12;
                 camera.pitch = (camera.pitch + (my - oy) * 0.12).clamp(-89.0, 89.0);
