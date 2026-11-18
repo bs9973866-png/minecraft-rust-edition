@@ -126,7 +126,7 @@ impl ResourcePack {
         &self.root
     }
 
-    fn object_path(&self, kind: &str, extension: &str, location: &ResourceLocation) -> String {
+    fn object_path(kind: &str, extension: &str, location: &ResourceLocation) -> String {
         format!("assets/{}/{}/{}.{}", location.namespace, kind, location.path, extension)
     }
 
@@ -182,7 +182,7 @@ impl ResourcePack {
 
     pub fn load_blockstate(&self, block: &str) -> Result<BlockStateFile, ResourceError> {
         let location = ResourceLocation::parse(block, "minecraft")?;
-        let path = self.object_path("blockstates", "json", &location);
+        let path = Self::object_path("blockstates", "json", &location);
         let json = self.read_text(&path, &location.canonical())?;
         parse_blockstate_json(&json, &location.canonical())
     }
@@ -190,7 +190,7 @@ impl ResourcePack {
     /// Return the PNG file bytes for a texture location. Image decoding is a renderer task.
     pub fn read_texture(&self, texture: &str, default_namespace: &str) -> Result<Vec<u8>, ResourceError> {
         let location = ResourceLocation::parse(texture, default_namespace)?;
-        let path = self.object_path("textures", "png", &location);
+        let path = Self::object_path("textures", "png", &location);
         self.read_bytes(&path)
     }
 }
@@ -876,10 +876,10 @@ mod tests {
         let high_state = r#"{"variants":{"":{"model":"block/child"}}}"#;
         write_resource(&low, "assets/example/blockstates/test.json", low_state);
         write_resource(&low, "assets/example/models/block/low.json", r#"{"textures":{"all":"blocks/low"}}"#);
-        write_resource(&low, "assets/example/models/block/shared.json", r#"{
+        write_resource(&low, "assets/example/models/block/shared.json", r##"{
             "textures":{"all":"blocks/shared"},
             "elements":[{"from":[0,0,0],"to":[16,16,16],"faces":{"north":{"texture":"#all"}}}]
-        }"#);
+        }"##);
         write_resource(&high, "assets/example/blockstates/test.json", high_state);
         write_resource(&high, "assets/example/models/block/child.json", r#"{
             "parent":"block/shared",
