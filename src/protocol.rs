@@ -1170,7 +1170,7 @@ impl PlaySession {
                 let keep_alive = decode_keep_alive(payload)?;
                 let mut response = Vec::new();
                 write_varint(keep_alive.id, &mut response);
-                self.stream.write_packet(0x00, &response)?;
+                self.send_packet(0x00, &response)?;
                 Ok(PlayEvent::KeepAliveResponded(keep_alive.id))
             }
             0x01 => {
@@ -1237,7 +1237,7 @@ impl PlaySession {
                     response.push(data.window_id);
                     response.extend_from_slice(&data.action_number.to_be_bytes());
                     response.push(1);
-                    self.stream.write_packet(0x0F, &response)?;
+                    self.send_packet(0x0F, &response)?;
                 }
                 Ok(PlayEvent::ConfirmTransaction(data))
             }
@@ -1271,7 +1271,7 @@ impl PlaySession {
 
     /// Send a full position + rotation update (C06).
     pub fn send_player_movement(&mut self, movement: PlayerMove, on_ground: bool) -> Result<(), ProtocolError> {
-        self.stream.write_packet(0x06, &player_position_look_payload(movement, on_ground))
+        self.send_packet(0x06, &player_position_look_payload(movement, on_ground))
     }
 
     /// Send a position-only update (C04).
@@ -1281,7 +1281,7 @@ impl PlaySession {
         payload.extend_from_slice(&y.to_be_bytes());
         payload.extend_from_slice(&z.to_be_bytes());
         payload.push(u8::from(on_ground));
-        self.stream.write_packet(0x04, &payload)
+        self.send_packet(0x04, &payload)
     }
 
     /// Send a rotation-only update (C05).
@@ -1290,11 +1290,11 @@ impl PlaySession {
         payload.extend_from_slice(&yaw.to_be_bytes());
         payload.extend_from_slice(&pitch.to_be_bytes());
         payload.push(u8::from(on_ground));
-        self.stream.write_packet(0x05, &payload)
+        self.send_packet(0x05, &payload)
     }
 
     pub fn send_player_ground(&mut self, on_ground: bool) -> Result<(), ProtocolError> {
-        self.stream.write_packet(0x03, &[u8::from(on_ground)])
+        self.send_packet(0x03, &[u8::from(on_ground)])
     }
 
     pub fn send_digging(&mut self, status: DiggingStatus, position: BlockPos, face: BlockFace) -> Result<(), ProtocolError> {
@@ -1302,12 +1302,12 @@ impl PlaySession {
         write_varint(status as i32, &mut payload);
         payload.extend_from_slice(&encode_packed_position(position).to_be_bytes());
         payload.push(face as u8);
-        self.stream.write_packet(0x07, &payload)
+        self.send_packet(0x07, &payload)
     }
 
     pub fn send_held_item_change(&mut self, slot: u8) -> Result<(), ProtocolError> {
         if slot > 8 { return Err(ProtocolError::InvalidHotbarSlot(slot as i32)); }
-        self.stream.write_packet(0x09, &(slot as i16).to_be_bytes())?;
+        self.send_packet(0x09, &(slot as i16).to_be_bytes())?;
         self.selected_hotbar_slot = slot;
         Ok(())
     }
@@ -1320,7 +1320,7 @@ impl PlaySession {
             .and_then(Option::as_ref)
             .cloned();
         let payload = block_placement_payload(position, face, held.as_ref(), cursor)?;
-        self.stream.write_packet(0x08, &payload)
+        self.send_packet(0x08, &payload)
     }
 
     /// Send the C08 item-use variant (no block face targeted).
@@ -1333,10 +1333,10 @@ impl PlaySession {
         if message.chars().count() > 100 { return Err(ProtocolError::InvalidChatMessage); }
         let mut payload = Vec::with_capacity(message.len() + 5);
         write_string(message, &mut payload);
-        self.stream.write_packet(0x01, &payload)
+        self.send_packet(0x01, &payload)
     }
     pub fn send_animation(&mut self) -> Result<(), ProtocolError> {
-        self.stream.write_packet(0x0A, &[])
+        self.send_packet(0x0A, &[])
     }
 
     /// Read the next event and apply authoritative world changes before returning it.
