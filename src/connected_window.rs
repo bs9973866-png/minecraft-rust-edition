@@ -4,7 +4,7 @@
 
 use std::collections::BTreeMap;
 use std::error::Error;
-use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::mpsc::{self, Receiver};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -49,6 +49,19 @@ pub fn run_connected_window(address: &str, username: &str, resource_pack: Option
                     PlayEvent::PlayerPositionLook(_) | PlayEvent::Respawn(_));
                 if let Some(ack) = simulation.apply_play_event(&event).map_err(|e| e.to_string())? {
                     play.send_player_movement(ack, simulation.player.on_ground).map_err(|e| e.to_string())?;
+                }
+                // Drain queued UI transforms and write only the newest one. All writes
+                // stay on this network thread, so protocol frames cannot interleave.
+                let mut latest_movement = None;
+                while let Ok(movement) = movement_rx.try_recv() {
+                    latest_movement = Some(movement);
+                }
+                if let Some(movement) = latest_movement {
+                    simulation.player.position = Vec3::new(movement.x, movement.y, movement.z);
+                    simulation.player.yaw = movement.yaw;
+                    simulation.player.pitch = movement.pitch;
+                    play.send_player_movement(movement, simulation.player.on_ground)
+                        .map_err(|e| e.to_string())?;
                 }
                 if important {
                     let p = simulation.player.position;
