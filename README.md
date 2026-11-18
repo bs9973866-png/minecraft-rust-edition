@@ -47,11 +47,12 @@ Run:
 ```sh
 cargo run -- --help
 cargo run -- --version
+cargo run --release -- --window
 cargo run -- --status play.example.net:25565
 cargo run -- --connect-offline 127.0.0.1:25565 PlayerName
 ```
 
-The status command performs the Minecraft Java status handshake and prints the raw JSON response. The connect command is a headless diagnostic session for offline-mode servers: it logs in, answers Keep Alive, decodes play events, and applies received chunk/block changes to the in-memory world. It does not render the game or provide player controls. Online-mode authentication is not implemented yet.
+The `--window` command opens an interactive CPU-rendered engine preview scene. Use WASD to move, Space/Left Shift to move vertically, the mouse or arrow keys to look, and Escape to close. This validates the window, framebuffer presentation, camera and input loop; it is not yet the actual network-loaded Minecraft world. The status command performs the Minecraft Java status handshake and prints the raw JSON response. The connect command is a headless diagnostic session for offline-mode servers: it logs in, answers Keep Alive, decodes play events, and applies received chunk/block changes to the in-memory world. It does not render the game or provide player controls. Online-mode authentication is not implemented yet.
 
 ## Planned engine milestones
 

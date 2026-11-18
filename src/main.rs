@@ -16,13 +16,15 @@ fn print_help() {
     println!("Usage:");
     println!("  minecraft-rust --help");
     println!("  minecraft-rust --version");
+    println!("  minecraft-rust --window");
     println!("  minecraft-rust --status HOST:PORT");
     println!("  minecraft-rust --connect-offline HOST:PORT USERNAME");
     println!();
     println!("Protocol target: Minecraft Java {TARGET_VERSION} (protocol {PROTOCOL_VERSION})");
     println!("--status probes the server status protocol.");
     println!("--connect-offline opens a headless offline-mode Play session and reports world events.");
-    println!("Online-mode authentication and the graphical window/input layer are not implemented yet.");
+    println!("--window opens an interactive software-rendered engine preview (WASD + mouse/arrow keys).");
+    println!("The preview is a renderer/input smoke test, not the complete Minecraft world.");
 }
 
 fn print_play_event(event: PlayEvent, world: &World) {
@@ -146,6 +148,7 @@ fn run() -> Result<(), String> {
             print_help();
             Ok(())
         }
+        Some("--window") => minecraft_rust::window::run_window().map_err(|error| error.to_string()),
         Some("--version") => {
             println!("Minecraft Rust Edition {} (protocol {})", TARGET_VERSION, PROTOCOL_VERSION);
             Ok(())
