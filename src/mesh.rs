@@ -246,15 +246,32 @@ pub fn build_model_mesh(
 #[derive(Clone, Debug, Default)]
 pub struct BlockModelRegistry {
     models: HashMap<BlockState, ResolvedBlockModel>,
+    variants: HashMap<BlockState, crate::resource_pack::ModelVariant>,
 }
 
 impl BlockModelRegistry {
     pub fn insert(&mut self, state: BlockState, model: ResolvedBlockModel) -> Option<ResolvedBlockModel> {
+        self.variants.remove(&state);
+        self.models.insert(state, model)
+    }
+
+    /// Register a model together with the blockstate rotation chosen by its weighted variant.
+    pub fn insert_variant(
+        &mut self,
+        state: BlockState,
+        model: ResolvedBlockModel,
+        variant: crate::resource_pack::ModelVariant,
+    ) -> Option<ResolvedBlockModel> {
+        self.variants.insert(state, variant);
         self.models.insert(state, model)
     }
 
     pub fn get(&self, state: BlockState) -> Option<&ResolvedBlockModel> {
         self.models.get(&state)
+    }
+
+    pub fn variant(&self, state: BlockState) -> Option<&crate::resource_pack::ModelVariant> {
+        self.variants.get(&state)
     }
 
     pub fn len(&self) -> usize { self.models.len() }
@@ -278,7 +295,26 @@ pub fn build_world_block_model_mesh(
     position: BlockPos,
     model: &ResolvedBlockModel,
 ) -> Result<ModelMesh, ResourceError> {
+    build_world_block_model_mesh_rotated(world, position, model, 0, 0)
+}
+
+/// Build a placed model after applying the blockstate's X-then-Y quarter-turn rotations.
+pub fn build_world_block_model_mesh_rotated(
+    world: &World,
+    position: BlockPos,
+    model: &ResolvedBlockModel,
+    x_rotation: i32,
+    y_rotation: i32,
+) -> Result<ModelMesh, ResourceError> {
     let mut source = build_model_mesh(model, [position.x as f32, position.y as f32, position.z as f32])?;
+    if x_rotation.rem_euclid(360) != 0 || y_rotation.rem_euclid(360) != 0 {
+        for vertex in &mut source.vertices {
+            vertex.position = rotate_block_position(vertex.position, position, x_rotation, y_rotation);
+            vertex.face = rotate_face(vertex.face, x_rotation, y_rotation);
+            vertex.cullface = vertex.cullface.map(|face| rotate_face(face, x_rotation, y_rotation));
+        }
+    }
+
     let mut visible = ModelMesh::default();
     for quad in source.vertices.chunks_exact(4) {
         let culled = quad[0].cullface
@@ -290,8 +326,47 @@ pub fn build_world_block_model_mesh(
         visible.indices.extend_from_slice(&[base, base + 1, base + 2, base, base + 2, base + 3]);
         visible.quad_count += 1;
     }
-    source = visible;
-    Ok(source)
+    Ok(visible)
+}
+
+fn rotate_block_position(
+    point: [f32; 3],
+    block: BlockPos,
+    x_rotation: i32,
+    y_rotation: i32,
+) -> [f32; 3] {
+    let center = [block.x as f32 + 0.5, block.y as f32 + 0.5, block.z as f32 + 0.5];
+    let mut relative = [point[0] - center[0], point[1] - center[1], point[2] - center[2]];
+    for _ in 0..(x_rotation.rem_euclid(360) / 90) {
+        relative = [relative[0], -relative[2], relative[1]];
+    }
+    for _ in 0..(y_rotation.rem_euclid(360) / 90) {
+        relative = [relative[2], relative[1], -relative[0]];
+    }
+    [relative[0] + center[0], relative[1] + center[1], relative[2] + center[2]]
+}
+
+fn rotate_face(face: FaceDirection, x_rotation: i32, y_rotation: i32) -> FaceDirection {
+    let mut result = face;
+    for _ in 0..(x_rotation.rem_euclid(360) / 90) {
+        result = match result {
+            FaceDirection::Down => FaceDirection::North,
+            FaceDirection::Up => FaceDirection::South,
+            FaceDirection::North => FaceDirection::Up,
+            FaceDirection::South => FaceDirection::Down,
+            other => other,
+        };
+    }
+    for _ in 0..(y_rotation.rem_euclid(360) / 90) {
+        result = match result {
+            FaceDirection::North => FaceDirection::West,
+            FaceDirection::West => FaceDirection::South,
+            FaceDirection::South => FaceDirection::East,
+            FaceDirection::East => FaceDirection::North,
+            other => other,
+        };
+    }
+    result
 }
 
 /// Build a chunk mesh from a caller-populated block-state to model registry.
@@ -312,7 +387,12 @@ pub fn build_chunk_model_mesh(
                     y,
                     chunk_pos.z * 16 + i32::from(z),
                 );
-                let block_mesh = build_world_block_model_mesh(world, position, model)?;
+                let (x_rotation, y_rotation) = registry.variant(state)
+                    .map(|variant| (variant.x, variant.y))
+                    .unwrap_or((0, 0));
+                let block_mesh = build_world_block_model_mesh_rotated(
+                    world, position, model, x_rotation, y_rotation
+                )?;
                 let base = output.vertices.len() as u32;
                 output.vertices.extend(block_mesh.vertices);
                 output.indices.extend(block_mesh.indices.into_iter().map(|index| index + base));
